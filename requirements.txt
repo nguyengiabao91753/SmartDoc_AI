@@ -12,3 +12,6 @@ torch
 pydantic
 sqlalchemy
 python-dotenv
+rank_bm25
+scikit-learn
+nltk
