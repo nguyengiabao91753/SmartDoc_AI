@@ -1,0 +1,56 @@
+@import url("https://fonts.googleapis.com/css2?family=Poppins:wght@400;500&display=swap");
+
+/* Reset lại margin mặc định để không bị viền trắng thừa */
+* { box-sizing: border-box; }
+body { margin: 0; padding: 0; }
+
+.login-container {
+    --white-color: hsl(0,0%,100%);
+    --black-color: hsl(0, 0%, 0%);
+    --body-font: "Poppins", sans-serif; 
+    --normal-font-size: 1rem;
+    --small-font-size: .813rem;
+    --font-medium: 500; 
+
+    font-family: var(--body-font);
+    color: var(--white-color);
+    position: relative;
+    height: 100vh;
+    display: grid;
+    align-items: center;
+    justify-content: center;
+
+    /* Các thuộc tính nền cố định, ảnh nền thực tế sẽ được thêm qua Python */
+    background-size: cover;
+    background-position: center;
+    background-attachment: fixed;
+}
+
+.login__form {
+    position: relative;
+    background-color: hsla(0, 0%, 10%, 0.1);
+    border: 2px solid var(--white-color);
+    border-radius: 1.5rem;
+    backdrop-filter: blur(8px);
+    width: 432px; 
+    padding: 4rem 3rem 3.5rem;
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+}
+
+.login__title { text-align: center; font-size: 2rem; font-weight: var(--font-medium); margin-bottom: 2rem; margin-top: 0; color: var(--white-color); }
+.login__content { display: grid; row-gap: 1.75rem; margin-bottom: 1.5rem; }
+.login__box { display: grid; grid-template-columns: 1fr; align-items: center; border-bottom: 2px solid var(--white-color); }
+.login__box-input { position: relative; }
+.login__input { width: 100%; padding-block: 0.8rem; background: none; color: var(--white-color); position: relative; z-index: 1; border: none; outline: none; font-size: var(--normal-font-size); font-family: var(--body-font); }
+.login__label { position: absolute; left: 0; top: 13px; font-weight: var(--font-medium); transition: top 0.3s, font-size 0.3s; color: var(--white-color); }
+.login__input:focus + .login__label, .login__input:not(:placeholder-shown) + .login__label { top: -12px; font-size: var(--small-font-size); }
+.login__check { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.5rem; }
+.login__check-group { display: flex; align-items: center; column-gap: 0.5rem; }
+.login__check-input { width: 16px; height: 16px; }
+.login__check-label, .login__register { font-size: var(--small-font-size); }
+
+.login__button { width: 100%; padding: 1rem; border-radius: 0.5rem; background-color: var(--white-color); color: var(--black-color); font-weight: var(--font-medium); cursor: pointer; border: none; font-size: var(--normal-font-size); font-family: var(--body-font); margin-bottom: 2rem; transition: 0.3s; }
+.login__button:hover { background-color: #e0e0e0; }
+.login__register { text-align: center; font-size: var(--small-font-size); }
+.login__register a { color: var(--white-color); font-weight: var(--font-medium); text-decoration: none; }
+.login__register a:hover { text-decoration: underline; }
