@@ -1,8 +1,62 @@
 import streamlit as st
 import os
-import base64  # <-- Thêm thư viện để giải mã file
+import base64
+import sys
+import json
+from urllib import request, error
+from pathlib import Path
+
+# Reduce BLAS memory pressure on Windows when loading embedding stack.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+
+# Add backend to path
+sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
+
+from app.services.rag_service import RAGService
+from app.core.logger import LOG
 
 st.set_page_config(layout="wide", page_title="SmartDoc AI")
+
+if "chat_messages" not in st.session_state:
+    st.session_state.chat_messages = []
+
+
+def get_ollama_status():
+    """Kiểm tra nhanh Ollama local API và model hiện có."""
+    url = "http://127.0.0.1:11434/api/tags"
+    try:
+        with request.urlopen(url, timeout=2) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+            models = [m.get("name", "") for m in payload.get("models", [])]
+            return True, models
+    except (error.URLError, TimeoutError, ValueError):
+        return False, []
+
+# ========== INITIALIZE RAG SERVICE ==========
+@st.cache_resource
+def get_rag_service():
+    """Cache RAG service để tránh khởi tạo lại"""
+    return RAGService()
+
+
+def ensure_rag_service():
+    """Khởi tạo RAG service theo nhu cầu để UI không bị treo khi mở trang."""
+    try:
+        return get_rag_service()
+    except Exception as e:
+        st.error(f"Không thể khởi tạo RAG service: {str(e)}")
+        LOG.error(f"RAG init error: {str(e)}")
+        return None
+
+
+ollama_ok, ollama_models = get_ollama_status()
+if ollama_ok:
+    model_text = ", ".join(ollama_models[:3]) if ollama_models else "(không có model)"
+    st.success(f"Ollama đang chạy. Models: {model_text}")
+else:
+    st.warning("Ollama chưa chạy hoặc không truy cập được tại 127.0.0.1:11434")
 
 # ==========================================================
 # 1. ĐỌC FILE CSS TỪ THƯ MỤC 'css'
@@ -196,7 +250,8 @@ export default function(component) {
             if (message) {
                 setTriggerValue("chat_event", {
                     "action": "send_message",
-                    "text": message
+                    "text": message,
+                    "nonce": Date.now()
                 });
                 chatInput.value = ""; 
             }
@@ -204,8 +259,9 @@ export default function(component) {
 
         sendBtn.addEventListener('click', sendMessage);
 
-        chatInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
+        chatInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.code === 'NumpadEnter') {
+                e.preventDefault();
                 sendMessage();
             }
         });
@@ -315,33 +371,92 @@ export default function(component) {
 
 css_code = load_css_file()
 
+
+@st.cache_resource
+def get_main_component():
+    """Khai báo component một lần để tránh cảnh báo overwrite khi rerun."""
+    return st.components.v2.component(
+        name="main_app_component",
+        html=html_code,
+        css=css_code,
+        js=js_code
+    )
+
 # ==========================================================
 # 5. KHỞI TẠO STREAMLIT COMPONENT & XỬ LÝ KẾT QUẢ TỪ UI
 # ==========================================================
-app_component_func = st.components.v2.component(
-    name="main_app_component",
-    html=html_code,
-    css=css_code,
-    js=js_code
-)
+app_component_func = get_main_component()
 
 app_result = app_component_func(height=1000)
 
+# Chuẩn hóa payload từ component trigger để hỗ trợ cả dạng trực tiếp
+# và dạng lồng trong key trigger (vd: {"chat_event": {...}}).
+event_payload = None
+if isinstance(app_result, dict):
+    if "action" in app_result:
+        event_payload = app_result
+    elif "chat_event" in app_result and isinstance(app_result["chat_event"], dict):
+        event_payload = app_result["chat_event"]
+elif isinstance(app_result, str):
+    try:
+        parsed = json.loads(app_result)
+        if isinstance(parsed, dict):
+            if "action" in parsed:
+                event_payload = parsed
+            elif "chat_event" in parsed and isinstance(parsed["chat_event"], dict):
+                event_payload = parsed["chat_event"]
+    except ValueError:
+        event_payload = None
+
 # (Đã mở rộng phần này để xử lý cả tin nhắn và file)
-if app_result:
-    action = app_result.get("action")
+if event_payload:
+    action = event_payload.get("action")
     
     # Kịch bản 1: Người dùng chat
     if action == "send_message":
-        user_message = app_result.get("text")
-        st.toast(f"Bạn vừa gửi: {user_message}", icon="💬")
+        rag = ensure_rag_service()
+        if rag is None:
+            st.stop()
+
+        user_message = event_payload.get("text")
+        if not user_message:
+            st.stop()
+
+        st.session_state.chat_messages.append({"role": "user", "text": user_message})
+        
+        with st.spinner("Đang suy luận..."):
+            try:
+                # Query RAG chain với Ollama
+                result = rag.query(user_message, search_type="vector")
+                
+                if result["status"] == "success":
+                    st.session_state.chat_messages.append({"role": "assistant", "text": result["answer"]})
+                    
+                    if result["sources"]:
+                        st.write("### Tài liệu liên quan:")
+                        for i, source in enumerate(result["sources"], 1):
+                            with st.expander(f"Nguồn {i} - {source['source']} (Chunk {source['chunk']})"):
+                                st.write(source["content"])
+                else:
+                    st.session_state.chat_messages.append({"role": "assistant", "text": result["answer"]})
+                    st.error(result["answer"])
+            except Exception as e:
+                st.session_state.chat_messages.append({"role": "assistant", "text": f"Lỗi query: {str(e)}"})
+                st.error(f"Lỗi query: {str(e)}")
+                LOG.error(f"Chat error: {str(e)}")
+
+            st.rerun()
         
     # Kịch bản 2: Người dùng upload file
     elif action == "upload_file":
-        file_name = app_result.get("file_name")
-        file_data_b64 = app_result.get("file_data")
+        rag = ensure_rag_service()
+        if rag is None:
+            st.stop()
+
+        file_name = event_payload.get("file_name")
+        file_data_b64 = event_payload.get("file_data")
         
-        with st.spinner(f"Đang lưu file {file_name}..."):
+        with st.spinner(f"Đang xử lý {file_name}..."):
             try:
                 # Cắt bỏ phần header của chuỗi Base64
                 if "," in file_data_b64:
@@ -349,17 +464,40 @@ if app_result:
                     
                 file_bytes = base64.b64decode(file_data_b64)
                 
-                # Lưu vào thư mục temp_docs bên cạnh file hiện tại
+                # Lưu tạm thời
                 current_dir = os.path.dirname(os.path.abspath(__file__))
-                save_dir = os.path.join(current_dir, "temp_docs")
-                os.makedirs(save_dir, exist_ok=True)
+                temp_dir = os.path.join(current_dir, "temp_docs")
+                os.makedirs(temp_dir, exist_ok=True)
                 
-                file_path = os.path.join(save_dir, file_name)
+                temp_file_path = os.path.join(temp_dir, file_name)
                 
-                with open(file_path, "wb") as f:
+                with open(temp_file_path, "wb") as f:
                     f.write(file_bytes)
-                    
-                st.toast(f"Lưu file thành công: {file_name}", icon="✅")
                 
+                # Thêm documents vào RAG vectorstore
+                result = rag.add_documents(temp_file_path)
+                
+                if result["status"] == "success":
+                    st.success(f"✅ {result['message']}")
+                    
+                    # Show RAG status
+                    status = rag.get_status()
+                    st.info(f"📊 Vectorstore: {status['total_documents']} documents | LLM: {status['llm_model']}")
+                else:
+                    st.error(f"❌ {result['message']}")
+                
+                # Clean up temp file
+                if os.path.exists(temp_file_path):
+                    os.remove(temp_file_path)
+                    
             except Exception as e:
-                st.error(f"Đã xảy ra lỗi khi lưu file: {str(e)}")
+                st.error(f"Lỗi xử lý file: {str(e)}")
+                LOG.error(f"Upload error: {str(e)}")
+
+            st.rerun()
+
+if st.session_state.chat_messages:
+    st.markdown("### Hội thoại")
+    for msg in st.session_state.chat_messages[-10:]:
+        prefix = "Bạn" if msg["role"] == "user" else "AI"
+        st.markdown(f"**{prefix}:** {msg['text']}")

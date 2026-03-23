@@ -1,41 +1,69 @@
-from langchain.chains import RetrievalQA
+from typing import List
+
+import numpy as np
+from langchain_core.documents import Document
+
 from app.ai.llm import get_llm
 from app.ai.retriever import get_retriever
 from app.vectorstore.faiss_store import FaissStore
-from langchain.schema import BaseRetriever, Document
-from typing import List, Any
-from pydantic import Field
 
-class LangChainRetriever(BaseRetriever):
-    # Sử dụng Pydantic Field thay vì __init__ để tương thích với LangChain/Pydantic
-    custom_retriever: Any = Field(description="Custom retriever implementation")
-    embeddings: Any = Field(description="Embeddings model")
 
-    class Config:
-        arbitrary_types_allowed = True
+class SimpleRAGChain:
+    """Compatibility wrapper that exposes invoke({"query": ...}) like RetrievalQA."""
 
-    def _get_relevant_documents(self, query: str, *, run_manager=None) -> List[Document]:
-        q_vector = self.embeddings.embed_query(query)
+    def __init__(self, custom_retriever, embeddings, llm):
+        self.custom_retriever = custom_retriever
+        self.embeddings = embeddings
+        self.llm = llm
+
+    def _embed_query(self, query: str) -> np.ndarray:
+        if hasattr(self.embeddings, "embed_query"):
+            q_vector = self.embeddings.embed_query(query)
+        else:
+            # sentence-transformers model path
+            q_vector = self.embeddings.encode(query, convert_to_numpy=True)
+
+        q_vector = np.asarray(q_vector, dtype="float32")
+        norm = np.linalg.norm(q_vector)
+        if norm > 0:
+            q_vector = q_vector / norm
+        return q_vector
+
+    def _retrieve_documents(self, query: str) -> List[Document]:
+        q_vector = self._embed_query(query)
         results = self.custom_retriever.retrieve(query, q_vector)
-        
-        documents = []
+
+        documents: List[Document] = []
         for res in results:
-            # Sao chép meta để tránh thay đổi dữ liệu gốc trong bộ nhớ cache (nếu có)
-            meta = res.get('meta', {}).copy()
-            page_content = meta.pop('text', '') # Tách nội dung văn bản ra khỏi metadata
-            documents.append(Document(page_content=page_content, metadata=res['meta']))
-            
+            meta = res.get("meta", {}).copy()
+            page_content = meta.pop("text", "")
+            documents.append(Document(page_content=page_content, metadata=meta))
         return documents
 
-    async def _aget_relevant_documents(self, query: str, *, run_manager=None) -> List[Document]:
-        # Asynchronous version can be implemented if needed
-        return self._get_relevant_documents(query, run_manager=run_manager)
+    def invoke(self, inputs: dict) -> dict:
+        query = inputs.get("query", "")
+        source_documents = self._retrieve_documents(query)
 
-def build_chain(store: FaissStore, embeddings, search_type: str = "vector"):
+        context = "\n\n".join(
+            [f"[Nguon {i + 1}] {doc.page_content}" for i, doc in enumerate(source_documents)]
+        )
+
+        prompt = (
+            "Ban la tro ly hoi dap dua tren tai lieu. "
+            "Chi tra loi dua tren phan NGU CANH. Neu khong du thong tin, noi ro khong tim thay trong tai lieu.\n\n"
+            f"NGU CANH:\n{context}\n\n"
+            f"CAU HOI:\n{query}\n\n"
+            "TRA LOI:"
+        )
+
+        answer = self.llm.invoke(prompt)
+        return {
+            "result": answer,
+            "source_documents": source_documents,
+        }
+
+
+def build_chain(store: FaissStore, embeddings, search_type: str = "vector", model: str | None = None):
     custom_retriever = get_retriever(store, search_type)
-    # Khởi tạo qua keyword arguments cho Pydantic model
-    langchain_retriever = LangChainRetriever(custom_retriever=custom_retriever, embeddings=embeddings)
-    
-    llm = get_llm()
-    qa = RetrievalQA.from_chain_type(llm=llm, retriever=langchain_retriever, return_source_documents=True)
-    return qa
+    llm = get_llm(model=model)
+    return SimpleRAGChain(custom_retriever=custom_retriever, embeddings=embeddings, llm=llm)
