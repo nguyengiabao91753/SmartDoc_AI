@@ -1,174 +1,230 @@
 import os
-import faiss
-import numpy as np
 import pickle
+import string
+from typing import Any, Dict, List
+
+import faiss
+import nltk
+import numpy as np
+from nltk.corpus import stopwords
+from rank_bm25 import BM25Okapi
+
 from app.core.config import settings
 from app.core.logger import LOG
-from rank_bm25 import BM25Okapi
-from sklearn.feature_extraction.text import TfidfVectorizer
-from typing import List, Dict, Any
-import nltk
-from nltk.corpus import stopwords
-import string
 
-nltk.download('stopwords')
-# Constants
 INDEX_FILE = os.path.join(settings.VECTOR_DIR, "faiss.index")
 META_FILE = os.path.join(settings.VECTOR_DIR, "meta.pkl")
 BM25_FILE = os.path.join(settings.VECTOR_DIR, "bm25.pkl")
 
-# Helper for text processing
+
+def _ensure_stopwords():
+    try:
+        nltk.data.find("corpora/stopwords")
+    except LookupError:
+        try:
+            nltk.download("stopwords", quiet=True)
+        except Exception as exc:
+            LOG.warning("Unable to download NLTK stopwords: %s", exc)
+
+
 def preprocess_text(text: str) -> List[str]:
-    stop_words = set(stopwords.words('english'))
-    text = text.lower()
-    text = text.translate(str.maketrans('', '', string.punctuation))
-    return [word for word in text.split() if word not in stop_words]
+    _ensure_stopwords()
+    try:
+        stop_words = set(stopwords.words("english"))
+    except LookupError:
+        stop_words = set()
+
+    normalized_text = (text or "").lower()
+    normalized_text = normalized_text.translate(str.maketrans("", "", string.punctuation))
+    return [word for word in normalized_text.split() if word and word not in stop_words]
+
 
 class BM25Retriever:
-    def __init__(self, corpus: List[str] = None):
+    def __init__(self, corpus: List[str] | None = None):
         self.corpus = corpus or []
-        self.bm25 = None
+        self.bm25: BM25Okapi | None = None
         if self.corpus:
             self.fit(self.corpus)
 
     def fit(self, corpus: List[str]):
         self.corpus = corpus
         tokenized_corpus = [preprocess_text(doc) for doc in self.corpus]
-        self.bm25 = BM25Okapi(tokenized_corpus)
+        self.bm25 = BM25Okapi(tokenized_corpus) if tokenized_corpus else None
 
-    def search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    def search(self, query: str, top_k: int | None = 5) -> List[Dict[str, Any]]:
         if not self.bm25:
             return []
+
         tokenized_query = preprocess_text(query)
         doc_scores = self.bm25.get_scores(tokenized_query)
-        top_k_indices = np.argsort(doc_scores)[-top_k:][::-1]
-        
-        results = []
-        for i in top_k_indices:
-            results.append({
-                "score": doc_scores[i],
-                "meta": {"text": self.corpus[i]},
-                "id": i
-            })
-        return results
+        limit = len(doc_scores) if top_k is None else min(top_k, len(doc_scores))
+        top_indices = np.argsort(doc_scores)[-limit:][::-1]
+        return [{"score": float(doc_scores[i]), "id": int(i)} for i in top_indices]
 
     def save(self, filepath: str):
-        with open(filepath, "wb") as f:
-            pickle.dump(self, f)
+        with open(filepath, "wb") as file_handle:
+            pickle.dump(self, file_handle)
 
     @staticmethod
     def load(filepath: str):
-        with open(filepath, "rb") as f:
-            return pickle.load(f)
+        with open(filepath, "rb") as file_handle:
+            return pickle.load(file_handle)
+
 
 class FaissStore:
-    def __init__(self, dim: int, index_type: str = 'flat'):
+    def __init__(self, dim: int, index_type: str = "flat"):
         os.makedirs(settings.VECTOR_DIR, exist_ok=True)
         self.dim = dim
         self.index_type = index_type.lower()
         self.index = self._create_index(dim, self.index_type)
-        self.meta = []
+        self.meta: List[Dict[str, Any]] = []
         self.bm25_retriever = BM25Retriever()
-        
+
     def _create_index(self, dim: int, index_type: str):
-        if index_type == 'ivf':
-            # IVF requires a quantizer and number of clusters (nlist)
-            nlist = 100  # Example value, should be tuned
+        if index_type == "ivf":
+            nlist = 100
             quantizer = faiss.IndexFlatIP(dim)
-            index = faiss.IndexIVFFlat(quantizer, dim, nlist, faiss.METRIC_INNER_PRODUCT)
-        elif index_type == 'hnsw':
-            # HNSW is a graph-based index, good for speed
-            m = 32  # Number of neighbors for each node, affects memory/speed trade-off
-            index = faiss.IndexHNSWFlat(dim, m, faiss.METRIC_INNER_PRODUCT)
-        else: # flat
-            index = faiss.IndexFlatIP(dim)
-        return index
+            return faiss.IndexIVFFlat(quantizer, dim, nlist, faiss.METRIC_INNER_PRODUCT)
+        if index_type == "hnsw":
+            m = 32
+            return faiss.IndexHNSWFlat(dim, m, faiss.METRIC_INNER_PRODUCT)
+        return faiss.IndexFlatIP(dim)
 
-    def add(self, vectors: np.ndarray, metas: list):
+    def _matches_filters(self, meta: Dict[str, Any], filters: Dict[str, Any] | None) -> bool:
+        if not filters:
+            return True
+        return all(meta.get(key) == value for key, value in filters.items())
+
+    def _refresh_bm25(self):
+        texts = [meta.get("text", "") for meta in self.meta if meta.get("text")]
+        if texts:
+            self.bm25_retriever.fit(texts)
+        else:
+            self.bm25_retriever = BM25Retriever()
+
+    def add(self, vectors: np.ndarray, metas: List[Dict[str, Any]]) -> List[int]:
         if vectors.size == 0:
-            return
-        
-        if self.index_type == 'ivf' and not self.index.is_trained:
+            return []
+
+        if len(vectors) != len(metas):
+            raise ValueError("Vectors and metadata length mismatch")
+
+        if self.index_type == "ivf" and not self.index.is_trained:
             self.index.train(vectors)
-        
-        self.index.add(vectors)
+
+        start_id = self.index.ntotal
+        self.index.add(vectors.astype("float32"))
         self.meta.extend(metas)
+        self._refresh_bm25()
 
-        # Update BM25 index with new text data
-        new_texts = [m['text'] for m in metas if 'text' in m]
-        if new_texts:
-            all_texts = [m['text'] for m in self.meta if 'text' in m]
-            self.bm25_retriever.fit(all_texts)
+        added_ids = list(range(start_id, self.index.ntotal))
+        LOG.info("Added %d vectors; total vectors: %d", len(added_ids), self.index.ntotal)
+        return added_ids
 
-        LOG.info("Added %d vectors; total vectors: %d", len(vectors), self.index.ntotal)
+    def search(self, q_vector: np.ndarray, top_k: int, filters: Dict[str, Any] | None = None):
+        if self.index.ntotal == 0:
+            return []
 
-    def search(self, q_vector: np.ndarray, top_k: int):
-        q = np.array([q_vector]).astype('float32')
-        scores, idxs = self.index.search(q, top_k)
+        candidate_k = self.index.ntotal if filters else min(top_k, self.index.ntotal)
+        q = np.asarray([q_vector], dtype="float32")
+        scores, indices = self.index.search(q, candidate_k)
+
         results = []
-        for score, idx in zip(scores[0], idxs[0]):
+        for score, idx in zip(scores[0], indices[0]):
             if idx < 0 or idx >= len(self.meta):
                 continue
-            results.append({"score": float(score), "meta": self.meta[idx], "id": int(idx)})
+            meta = self.meta[idx]
+            if not self._matches_filters(meta, filters):
+                continue
+            results.append({"score": float(score), "meta": meta, "id": int(idx)})
+            if len(results) >= top_k:
+                break
         return results
 
-    def hybrid_search(self, query_text: str, q_vector: np.ndarray, top_k: int, alpha: float = 0.5):
-        # Vector search
-        vector_results = self.search(q_vector, top_k)
-        
-        # Keyword search
-        bm25_results = self.bm25_retriever.search(query_text, top_k)
+    def keyword_search(self, query_text: str, top_k: int, filters: Dict[str, Any] | None = None):
+        if not self.meta:
+            return []
 
-        # Combine results (simple re-ranking for now)
-        # This is a naive combination. A better approach would be to use a reciprocal rank fusion
-        combined_results = {}
-        for res in vector_results:
-            combined_results[res['id']] = {'vector_score': res['score'], 'meta': res['meta']}
+        candidate_k = len(self.meta) if filters else top_k
+        bm25_results = self.bm25_retriever.search(query_text, candidate_k)
 
-        for res in bm25_results:
-            if res['id'] in combined_results:
-                combined_results[res['id']]['bm25_score'] = res['score']
-            else:
-                # This case is tricky as we don't have vector score.
-                # For simplicity, we can ignore or assign a default.
-                pass
-        
-        final_scores = []
-        for id, scores in combined_results.items():
-            vec_score = scores.get('vector_score', 0)
-            bm25_score = scores.get('bm25_score', 0)
-            # Weighted sum for ranking
-            final_score = alpha * vec_score + (1 - alpha) * bm25_score
-            final_scores.append((final_score, scores['meta'], id))
+        results = []
+        for result in bm25_results:
+            idx = result["id"]
+            if idx < 0 or idx >= len(self.meta):
+                continue
+            meta = self.meta[idx]
+            if not self._matches_filters(meta, filters):
+                continue
+            results.append({"score": float(result["score"]), "meta": meta, "id": idx})
+            if len(results) >= top_k:
+                break
+        return results
 
-        final_scores.sort(key=lambda x: x[0], reverse=True)
-        
-        return [{"score": score, "meta": meta, "id": id} for score, meta, id in final_scores[:top_k]]
+    def hybrid_search(
+        self,
+        query_text: str,
+        q_vector: np.ndarray,
+        top_k: int,
+        alpha: float = 0.6,
+        filters: Dict[str, Any] | None = None,
+    ):
+        vector_results = self.search(q_vector, top_k, filters=filters)
+        keyword_results = self.keyword_search(query_text, top_k, filters=filters)
+
+        if not vector_results and not keyword_results:
+            return []
+
+        max_vector_score = max((result["score"] for result in vector_results), default=1.0) or 1.0
+        max_keyword_score = max((result["score"] for result in keyword_results), default=1.0) or 1.0
+
+        combined_results: Dict[int, Dict[str, Any]] = {}
+        for result in vector_results:
+            combined_results[result["id"]] = {
+                "meta": result["meta"],
+                "vector_score": result["score"] / max_vector_score,
+                "keyword_score": 0.0,
+            }
+
+        for result in keyword_results:
+            entry = combined_results.setdefault(
+                result["id"],
+                {"meta": result["meta"], "vector_score": 0.0, "keyword_score": 0.0},
+            )
+            entry["keyword_score"] = result["score"] / max_keyword_score
+
+        ranked = []
+        for item_id, scores in combined_results.items():
+            final_score = alpha * scores["vector_score"] + (1 - alpha) * scores["keyword_score"]
+            ranked.append({"score": float(final_score), "meta": scores["meta"], "id": item_id})
+
+        ranked.sort(key=lambda item: item["score"], reverse=True)
+        return ranked[:top_k]
 
     def save(self):
-        index_path = os.path.join(settings.VECTOR_DIR, "faiss.index")
-        meta_path = os.path.join(settings.VECTOR_DIR, "meta.pkl")
-        bm25_path = os.path.join(settings.VECTOR_DIR, "bm25.pkl")
+        faiss.write_index(self.index, INDEX_FILE)
+        with open(META_FILE, "wb") as file_handle:
+            pickle.dump(self.meta, file_handle)
+        self.bm25_retriever.save(BM25_FILE)
+        LOG.info("Saved FAISS index, metadata, and BM25 model to %s", settings.VECTOR_DIR)
 
-        faiss.write_index(self.index, index_path)
-        with open(meta_path, "wb") as f:
-            pickle.dump(self.meta, f)
-        self.bm25_retriever.save(bm25_path)
-        LOG.info("Saved FAISS index, meta, and BM25 model to %s", settings.VECTOR_DIR)
-
-    def load(self):
+    def load(self) -> bool:
         try:
             if not os.path.exists(INDEX_FILE) or not os.path.exists(META_FILE):
                 return False
+
             self.index = faiss.read_index(INDEX_FILE)
-            with open(META_FILE, "rb") as f:
-                self.meta = pickle.load(f)
+            with open(META_FILE, "rb") as file_handle:
+                self.meta = pickle.load(file_handle)
+
             if os.path.exists(BM25_FILE):
                 self.bm25_retriever = BM25Retriever.load(BM25_FILE)
-            
+            else:
+                self._refresh_bm25()
+
             self.dim = self.index.d
             LOG.info("Loaded FAISS index with %d vectors", self.index.ntotal)
             return True
-        except Exception as e:
-            LOG.exception("Failed to load index: %s", e)
+        except Exception as exc:
+            LOG.exception("Failed to load index: %s", exc)
             return False

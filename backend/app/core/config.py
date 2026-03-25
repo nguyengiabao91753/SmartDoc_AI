@@ -25,9 +25,11 @@ class Settings(BaseSettings):
     # Chunking
     CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", 1000))
     CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", 200))
+    OVERLAP_SENTENCES: int = int(os.getenv("OVERLAP_SENTENCES", 2))
 
     # FAISS params
     TOP_K: int = int(os.getenv("TOP_K", 3))
+    TOP_K_DETAILED: int = int(os.getenv("TOP_K_DETAILED", 6))
 
     model_config = SettingsConfigDict(
         env_file=(str(ROOT / ".env"), str(ROOT / "backend" / ".env"))

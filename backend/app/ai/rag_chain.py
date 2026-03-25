@@ -43,6 +43,11 @@ class SimpleRAGChain:
     def invoke(self, inputs: dict) -> dict:
         query = inputs.get("query", "")
         source_documents = self._retrieve_documents(query)
+        if not source_documents:
+            return {
+                "result": "Khong tim thay noi dung phu hop trong tai lieu hien tai.",
+                "source_documents": [],
+            }
 
         context = "\n\n".join(
             [f"[Nguon {i + 1}] {doc.page_content}" for i, doc in enumerate(source_documents)]
@@ -50,7 +55,9 @@ class SimpleRAGChain:
 
         prompt = (
             "Ban la tro ly hoi dap dua tren tai lieu. "
-            "Chi tra loi dua tren phan NGU CANH. Neu khong du thong tin, noi ro khong tim thay trong tai lieu.\n\n"
+            "Chi tra loi dua tren phan NGU CANH. "
+            "Tra loi bang cung ngon ngu voi cau hoi; neu cau hoi bang tieng Viet thi tra loi bang tieng Viet ro rang. "
+            "Neu khong du thong tin, noi ro khong tim thay trong tai lieu.\n\n"
             f"NGU CANH:\n{context}\n\n"
             f"CAU HOI:\n{query}\n\n"
             "TRA LOI:"
@@ -63,7 +70,14 @@ class SimpleRAGChain:
         }
 
 
-def build_chain(store: FaissStore, embeddings, search_type: str = "vector", model: str | None = None):
-    custom_retriever = get_retriever(store, search_type)
+def build_chain(
+    store: FaissStore,
+    embeddings,
+    search_type: str = "vector",
+    model: str | None = None,
+    top_k: int | None = None,
+    filters: dict | None = None,
+):
+    custom_retriever = get_retriever(store, search_type, top_k=top_k, filters=filters)
     llm = get_llm(model=model)
     return SimpleRAGChain(custom_retriever=custom_retriever, embeddings=embeddings, llm=llm)

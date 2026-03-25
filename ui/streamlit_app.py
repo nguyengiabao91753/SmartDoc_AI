@@ -1,503 +1,740 @@
-import streamlit as st
-import os
-import base64
+﻿import os
+import re
 import sys
-import json
-from urllib import request, error
+from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
-# Reduce BLAS memory pressure on Windows when loading embedding stack.
+import streamlit as st
+import streamlit.components.v1 as components
+
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 
-# Add backend to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
 
-from app.services.rag_service import RAGService
+from app.core.config import settings
 from app.core.logger import LOG
+from app.services.database_service import db_service
+from app.services.rag_service import RAGService
 
 st.set_page_config(layout="wide", page_title="SmartDoc AI")
 
-if "chat_messages" not in st.session_state:
-    st.session_state.chat_messages = []
+
+def load_css_file() -> str:
+    css_path = Path(__file__).parent / "css" / "app.css"
+    return css_path.read_text(encoding="utf-8") if css_path.exists() else ""
 
 
-def get_ollama_status():
-    """Kiểm tra nhanh Ollama local API và model hiện có."""
-    url = "http://127.0.0.1:11434/api/tags"
-    try:
-        with request.urlopen(url, timeout=2) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-            models = [m.get("name", "") for m in payload.get("models", [])]
-            return True, models
-    except (error.URLError, TimeoutError, ValueError):
-        return False, []
-
-# ========== INITIALIZE RAG SERVICE ==========
 @st.cache_resource
 def get_rag_service():
-    """Cache RAG service để tránh khởi tạo lại"""
     return RAGService()
 
 
 def ensure_rag_service():
-    """Khởi tạo RAG service theo nhu cầu để UI không bị treo khi mở trang."""
     try:
         return get_rag_service()
-    except Exception as e:
-        st.error(f"Không thể khởi tạo RAG service: {str(e)}")
-        LOG.error(f"RAG init error: {str(e)}")
+    except Exception as exc:
+        LOG.error("RAG init error: %s", exc)
+        st.error(f"Không thể khởi tạo RAG service: {exc}")
         return None
 
 
-ollama_ok, ollama_models = get_ollama_status()
-if ollama_ok:
-    model_text = ", ".join(ollama_models[:3]) if ollama_models else "(không có model)"
-    st.success(f"Ollama đang chạy. Models: {model_text}")
-else:
-    st.warning("Ollama chưa chạy hoặc không truy cập được tại 127.0.0.1:11434")
-
-# ==========================================================
-# 1. ĐỌC FILE CSS TỪ THƯ MỤC 'css'
-# ==========================================================
-
-def load_css_file():
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    css_path = os.path.join(current_dir, "css/app.css")
-    
-    if os.path.exists(css_path):
-        with open(css_path, "r", encoding="utf-8") as f:
-            return f.read()
-    return ""
-
-# ==========================================================
-# 2. GLOBAL CSS: Ẩn UI mặc định của Streamlit
-# ==========================================================
-global_css = """
-<style>
-header[data-testid="stHeader"], [data-testid="stSidebar"], footer { display: none !important; }
-[data-testid="stFileUploader"] { 
-    position: fixed !important; 
-    top: 50% !important; 
-    left: 55% !important; 
-    transform: translate(-50%, -100%) !important; 
-    width: 60% !important; 
-    max-width: 600px !important; 
-    z-index: 999999 !important; 
-}
-[data-testid="stFileUploader"] section {
-    border: 2px dashed #6366f1 !important;
-    border-radius: 16px !important;
-    background: white !important;
-    padding: 30px !important;
-}
-.block-container { padding: 0 !important; max-width: 100% !important; }
-iframe { border: none !important; }
-</style>
-"""
-st.html(global_css)
-
-# ==========================================================
-# 3. HTML COMPONENT
-# ==========================================================
-html_code = """
-<input type="checkbox" id="sidebar-toggle" style="display: none;">
-
-<div id="custom-app">
-    <div id="sidebar" class="sidebar">
-        <div class="sidebar-section">
-            <h3>
-                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg> 
-                Lịch sử hội thoại
-            </h3>
-            <div class="empty-state">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z"/></svg>
-                Danh sách trống
-            </div>
-        </div>
-        <div style="flex-grow: 1;"></div>
-        <div class="sidebar-section">
-            <h3>
-                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 16v-4m0-4h.01"/></svg>
-                Hướng dẫn
-            </h3>
-            <ul class="instructions-list">
-                <li>
-                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                    Tải tài liệu lên.
-                </li>
-                <li>
-                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/></svg>
-                    Chọn tham số.
-                </li>
-                <li>
-                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
-                    Chat với AI.
-                </li>
-            </ul>
-        </div>
-    </div>
-
-    <div class="main-content">
-        <header class="top-nav">
-            <label for="sidebar-toggle" class="toggle-btn">
-                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
-            </label>
-            <div class="auth-group">
-                <a href="/log_in" target="_self" class="btn btn-login">
-                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"/></svg>
-                    Đăng nhập
-                </a>
-                <a href="/register" target="_self" class="btn btn-register">
-                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"/></svg>
-                    Đăng ký
-                </a>
-            </div>
-        </header>
-
-        <div class="content-body">
-            <div class="hero">
-                <h1>Hệ thống Phân tích Tài liệu</h1>
-                <p style="color: #64748b;">Tải tài liệu và bắt đầu trò chuyện cùng AI</p>
-            </div>
-            
-            <input type="file" id="hidden-file-input" accept=".pdf,.doc,.docx" style="display: none;">
-            <div class="upload-box" id="upload-box-trigger">
-                <svg class="icon-xl" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.233-2.33 3 3 0 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z"/></svg>
-                <div style="font-weight: 600; font-size: 1.1rem;">Kéo thả file vào đây</div>
-                <div style="color: #64748b; font-size: 14px; margin-top: 5px;">Hỗ trợ định dạng PDF, DOCX</div>
-                <button class="upload-btn" id="upload-btn-trigger">
-                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
-                    Chọn file từ máy
-                </button>
-            </div>
-
-            <div id="upload-status" style="display: none; margin-top: 20px; background: white; padding: 20px; border-radius: 12px; border: 1px solid #e2e8f0; text-align: left; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
-                <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
-                    <span id="st-text" style="font-weight: 600; font-size: 14px; color: #0f172a;">Đang chuẩn bị...</span>
-                    <span id="st-pct" style="font-size: 14px; color: #6366f1; font-weight: 600;">0%</span>
-                </div>
-                <div style="width: 100%; background: #f1f5f9; border-radius: 8px; height: 8px; overflow: hidden; margin-bottom: 20px;">
-                    <div id="st-bar" style="width: 0%; height: 100%; background: #6366f1; transition: width 0.5s ease-out, background-color 0.3s;"></div>
-                </div>
-                <div style="font-size: 13.5px; color: #64748b; display: flex; flex-direction: column; gap: 10px;">
-                    <div id="step-1" style="display: flex; gap: 8px; align-items: center;"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg> Đang scan tài liệu...</div>
-                    <div id="step-2" style="display: flex; gap: 8px; align-items: center;"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg> Đang xử lý...</div>
-                    <div id="step-3" style="display: flex; gap: 8px; align-items: center;"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg> Đang lưu...</div>
-                    <div id="step-4" style="display: flex; gap: 8px; align-items: center;"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg> Tài liệu đã sẵn sàng</div>
-                </div>
-            </div>
-
-            <div class="search-container" style="display: flex; flex-direction: column; align-items: center; margin-top: 30px;">
-                <input type="radio" id="type-semantic" name="r1" class="search-type-input" checked>
-                <input type="radio" id="type-keyword" name="r1" class="search-type-input">
-                <div class="search-ui">
-                    <div class="config-bar" style="margin-top: 0;">
-                        <label for="type-semantic">
-                            <span class="radio-custom"></span> 
-                            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
-                            Ngữ nghĩa
-                        </label>
-                        <label for="type-keyword">
-                            <span class="radio-custom"></span> 
-                            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-                            Từ khóa
-                        </label>
-                    </div>
-                    <div class="semantic-sub">
-                        <label>
-                            <input type="radio" name="r2" checked> 
-                            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-                            Nhanh
-                        </label>
-                        <label>
-                            <input type="radio" name="r2"> 
-                            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7M5 19l4-4m10-8l-6 6"/></svg>
-                            Kỹ
-                        </label>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="chat-container">
-            <div class="chat-wrapper">
-                <input type="text" class="chat-input" placeholder="Nhập câu hỏi...">
-                <button class="send-btn">
-                    <svg class="icon" style="color: white; width: 1.2rem; height: 1.2rem;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
-                </button>
-            </div>
-        </div>
-    </div>
-</div>
-"""
-
-# ==========================================================
-# 4. JS SCRIPT (Đã fix lỗi không nhận nút bấm)
-# ==========================================================
-js_code = """
-export default function(component) {
-    const { setTriggerValue, parentElement } = component;
-    
-    // --- XỬ LÝ CHAT ---
-    const sendBtn = parentElement.querySelector(".send-btn");
-    const chatInput = parentElement.querySelector(".chat-input");
-    
-    if (sendBtn && chatInput) {
-        const sendMessage = () => {
-            const message = chatInput.value.trim();
-            if (message) {
-                setTriggerValue("chat_event", {
-                    "action": "send_message",
-                    "text": message,
-                    "nonce": Date.now()
-                });
-                chatInput.value = ""; 
-            }
-        };
-
-        sendBtn.addEventListener('click', sendMessage);
-
-        chatInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' || e.code === 'NumpadEnter') {
-                e.preventDefault();
-                sendMessage();
-            }
-        });
+def init_state():
+    defaults = {
+        "active_session_id": None,
+        "draft_session": False,
+        "latest_sources_by_session": {},
+        "uploader_nonce": 0,
+        "flash_message": None,
+        "editing_session_id": None,
+        "queued_upload": None,
+        "processing_upload": None,
+        "queued_query": None,
+        "processing_query": None,
+        "last_upload_success": None,
+        "current_search_label": "Ngữ nghĩa",
+        "current_detail_label": "Nhanh",
+        "composer_prompt": "",
+        "open_session_menu_id": None,
+        "scroll_to_bottom_nonce": 0,
+        "scroll_applied_nonce": 0,
     }
+    for key, value in defaults.items():
+        st.session_state.setdefault(key, value)
 
-    // --- XỬ LÝ UPLOAD FILE ---
-    // Sửa document thành parentElement để Streamlit có thể tìm thấy nút bấm
-    const fileInput = parentElement.querySelector("#hidden-file-input");
-    const uploadBox = parentElement.querySelector("#upload-box-trigger");
-    const uploadBtn = parentElement.querySelector("#upload-btn-trigger");
 
-    if (fileInput && uploadBox && uploadBtn) {
-        
-        // Mở hộp thoại chọn file khi click vào khu vực Upload
-        const openFileDialog = (e) => {
-            e.stopPropagation();
-            fileInput.click();
-        };
-        uploadBox.addEventListener("click", openFileDialog);
-        uploadBtn.addEventListener("click", openFileDialog);
+def schedule_bottom_scroll():
+    st.session_state.scroll_to_bottom_nonce = int(st.session_state.get("scroll_to_bottom_nonce", 0)) + 1
 
-        // Xử lý khi user chọn file xong
-        fileInput.addEventListener("change", (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
 
-            // 1. Chạy hiệu ứng Loading (Cũng phải dùng parentElement)
-            const uploadStatus = parentElement.querySelector('#upload-status');
-            if (uploadStatus) {
-                uploadStatus.style.display = 'block';
-                const steps = [
-                    {text:'Đang đọc tài liệu...', pct:25, id:'#step-1'},
-                    {text:'Đang xử lý...', pct:60, id:'#step-2'},
-                    {text:'Đang lưu...', pct:90, id:'#step-3'},
-                    {text:'Tài liệu đã sẵn sàng', pct:100, id:'#step-4'}
-                ];
-                
-                const stBar = parentElement.querySelector('#st-bar');
-                const stPct = parentElement.querySelector('#st-pct');
-                const stText = parentElement.querySelector('#st-text');
-                
-                if(stBar) { stBar.style.width = '0%'; stBar.style.background = '#6366f1'; }
-                if(stPct) { stPct.innerText = '0%'; stPct.style.color = '#6366f1'; }
-                
-                const svgCircle = `<svg class='icon' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><circle cx='12' cy='12' r='9'/></svg>`;
-                const svgSpin = `<svg class='icon spin' style='color:#6366f1' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path stroke-linecap='round' stroke-linejoin='round' d='M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z'/></svg>`;
-                const svgCheck = `<svg class='icon' style='color:#10b981' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path stroke-linecap='round' stroke-linejoin='round' d='M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z'/></svg>`;
+def apply_scheduled_bottom_scroll():
+    target_nonce = int(st.session_state.get("scroll_to_bottom_nonce", 0))
+    applied_nonce = int(st.session_state.get("scroll_applied_nonce", 0))
+    if target_nonce <= applied_nonce:
+        return
 
-                steps.forEach(s => {
-                    const el = parentElement.querySelector(s.id);
-                    if(el) {
-                        el.style.color = '#64748b';
-                        el.innerHTML = svgCircle + ' ' + s.text;
-                    }
-                });
-
-                let currentStep = 0;
-                function processStep() {
-                    if(currentStep >= steps.length) return;
-                    const step = steps[currentStep];
-                    const el = parentElement.querySelector(step.id);
-                    
-                    if(el) {
-                        el.innerHTML = svgSpin + ' ' + step.text;
-                        el.style.color = '#0f172a';
-                    }
-                    if(stText) stText.innerText = step.text;
-                    
-                    setTimeout(() => {
-                        if(el) {
-                            el.innerHTML = svgCheck + ' ' + step.text;
-                            el.style.color = '#10b981';
-                        }
-                        if(stBar) stBar.style.width = step.pct + '%';
-                        if(stPct) stPct.innerText = step.pct + '%';
-                        currentStep++;
-                        
-                        if(currentStep < steps.length) {
-                            setTimeout(processStep, 800);
-                        } else {
-                            if(stBar) stBar.style.background = '#10b981';
-                            if(stText) stText.innerText = 'Hoàn tất!';
-                            if(stPct) stPct.style.color = '#10b981';
-                        }
-                    }, 1000);
-                }
-                setTimeout(processStep, 200);
+    components.html(
+        """
+        <script>
+        setTimeout(() => {
+            const parentDoc = window.parent.document;
+            const anchor = parentDoc.getElementById("content-bottom-anchor");
+            if (anchor) {
+                anchor.scrollIntoView({ behavior: "smooth", block: "end" });
             }
-
-            // 2. Đọc file thành Base64 và gửi cho Python
-            const reader = new FileReader();
-            reader.onload = (event) => {
-                setTriggerValue("chat_event", {
-                    "action": "upload_file",
-                    "file_name": file.name,
-                    "file_type": file.type,
-                    "file_data": event.target.result
-                });
-            };
-            reader.readAsDataURL(file);
-            
-            fileInput.value = ""; 
-        });
-    }
-}
-"""
-
-css_code = load_css_file()
+        }, 80);
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+    st.session_state.scroll_applied_nonce = target_nonce
 
 
-@st.cache_resource
-def get_main_component():
-    """Khai báo component một lần để tránh cảnh báo overwrite khi rerun."""
-    return st.components.v2.component(
-        name="main_app_component",
-        html=html_code,
-        css=css_code,
-        js=js_code
+def is_busy() -> bool:
+    return any(
+        [
+            st.session_state.get("queued_upload"),
+            st.session_state.get("processing_upload"),
+            st.session_state.get("queued_query"),
+            st.session_state.get("processing_query"),
+        ]
     )
 
-# ==========================================================
-# 5. KHỞI TẠO STREAMLIT COMPONENT & XỬ LÝ KẾT QUẢ TỪ UI
-# ==========================================================
-app_component_func = get_main_component()
 
-app_result = app_component_func(height=1000)
+def show_flash_message():
+    flash = st.session_state.get("flash_message")
+    if not flash:
+        return
 
-# Chuẩn hóa payload từ component trigger để hỗ trợ cả dạng trực tiếp
-# và dạng lồng trong key trigger (vd: {"chat_event": {...}}).
-event_payload = None
-if isinstance(app_result, dict):
-    if "action" in app_result:
-        event_payload = app_result
-    elif "chat_event" in app_result and isinstance(app_result["chat_event"], dict):
-        event_payload = app_result["chat_event"]
-elif isinstance(app_result, str):
+    kind = flash.get("type", "error")
+    text = flash.get("text", "")
+    if kind == "success":
+        st.success(text)
+    elif kind == "warning":
+        st.warning(text)
+    else:
+        st.error(text)
+    st.session_state.flash_message = None
+
+
+def transition_pending_states():
+    if st.session_state.get("queued_upload") and not st.session_state.get("processing_upload"):
+        st.session_state.processing_upload = st.session_state.queued_upload
+        st.session_state.queued_upload = None
+        st.rerun()
+
+    if st.session_state.get("queued_query") and not st.session_state.get("processing_query"):
+        st.session_state.processing_query = st.session_state.queued_query
+        st.session_state.queued_query = None
+        st.rerun()
+
+
+def ensure_active_session():
+    sessions = db_service.get_chat_sessions()
+    if not sessions:
+        st.session_state.active_session_id = None
+        st.session_state.draft_session = True
+        return sessions
+
+    if st.session_state.get("draft_session"):
+        st.session_state.active_session_id = None
+        return sessions
+
+    if st.session_state.active_session_id is None or not any(
+        session["id"] == st.session_state.active_session_id for session in sessions
+    ):
+        st.session_state.active_session_id = sessions[0]["id"]
+    return sessions
+
+
+def get_active_session(sessions):
+    for session in sessions:
+        if session["id"] == st.session_state.active_session_id:
+            return session
+    return None
+
+
+def create_new_chat():
+    if is_busy():
+        return
+    st.session_state.active_session_id = None
+    st.session_state.draft_session = True
+    st.session_state.last_upload_success = None
+    st.session_state.composer_prompt = ""
+    st.session_state.editing_session_id = None
+    st.session_state.open_session_menu_id = None
+    st.rerun()
+
+
+def set_active_session(session_id: int):
+    if is_busy():
+        return
+    st.session_state.draft_session = False
+    st.session_state.active_session_id = session_id
+    st.session_state.editing_session_id = None
+    st.session_state.last_upload_success = None
+    st.session_state.composer_prompt = ""
+    st.session_state.open_session_menu_id = None
+    st.rerun()
+
+
+def begin_session_rename(session_id: int, current_title: str):
+    if is_busy():
+        return
+    st.session_state.editing_session_id = session_id
+    st.session_state[f"rename_input_{session_id}"] = current_title
+    st.session_state.open_session_menu_id = None
+    st.rerun()
+
+
+def cancel_session_rename():
+    st.session_state.editing_session_id = None
+    st.session_state.open_session_menu_id = None
+
+
+def toggle_session_menu(session_id: int):
+    current = st.session_state.get("open_session_menu_id")
+    st.session_state.open_session_menu_id = None if current == session_id else session_id
+
+
+def commit_session_rename(session_id: int):
+    new_title = st.session_state.get(f"rename_input_{session_id}", "").strip()
+    if new_title:
+        db_service.rename_chat_session(session_id, new_title)
+    st.session_state.editing_session_id = None
+    st.session_state.open_session_menu_id = None
+
+
+def remove_session(session_id: int):
+    if is_busy():
+        return
+
+    db_service.delete_chat_session(session_id)
+    st.session_state.latest_sources_by_session.pop(session_id, None)
+
+    if st.session_state.get("editing_session_id") == session_id:
+        st.session_state.editing_session_id = None
+    if st.session_state.get("open_session_menu_id") == session_id:
+        st.session_state.open_session_menu_id = None
+
+    queued_query = st.session_state.get("queued_query")
+    if queued_query and queued_query.get("session_id") == session_id:
+        st.session_state.queued_query = None
+
+    processing_query = st.session_state.get("processing_query")
+    if processing_query and processing_query.get("session_id") == session_id:
+        st.session_state.processing_query = None
+
+    if st.session_state.get("active_session_id") == session_id:
+        st.session_state.active_session_id = None
+        st.session_state.last_upload_success = None
+        st.session_state.composer_prompt = ""
+        st.session_state.draft_session = False
+
+    st.session_state.flash_message = {"type": "success", "text": "Đã xóa đoạn chat."}
+    st.rerun()
+
+
+def sanitize_filename(filename: str) -> str:
+    stem = Path(filename).stem
+    suffix = Path(filename).suffix.lower()
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._")
+    safe_stem = safe_stem or "document"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{timestamp}_{uuid4().hex[:8]}_{safe_stem}{suffix}"
+
+
+def save_uploaded_bytes(filename: str, content: bytes) -> str:
+    os.makedirs(settings.DOCUMENT_DIR, exist_ok=True)
+    saved_name = sanitize_filename(filename)
+    saved_path = os.path.join(settings.DOCUMENT_DIR, saved_name)
+    with open(saved_path, "wb") as file_handle:
+        file_handle.write(content)
+    return saved_path
+
+
+def session_can_receive_document(active_session: dict | None) -> bool:
+    if not active_session:
+        return False
+    if active_session.get("document_id") is not None:
+        return False
+    return int(active_session.get("exchange_count") or 0) == 0
+
+
+def queue_document_upload(rag: RAGService | None, uploaded_file, active_session: dict | None):
+    if rag is None:
+        st.session_state.flash_message = {"type": "error", "text": "RAG service chưa sẵn sàng."}
+        st.rerun()
+
+    if uploaded_file is None:
+        st.session_state.flash_message = {"type": "warning", "text": "Hãy chọn file PDF hoặc DOCX trước."}
+        st.rerun()
+
+    st.session_state.queued_upload = {
+        "session_id": active_session["id"] if active_session else None,
+        "file_name": uploaded_file.name,
+        "file_bytes": uploaded_file.getvalue(),
+    }
+    st.session_state.last_upload_success = None
+    st.rerun()
+
+
+def process_pending_upload(rag: RAGService | None):
+    payload = st.session_state.get("processing_upload")
+    if not payload:
+        return
+
+    if rag is None:
+        st.session_state.processing_upload = None
+        st.session_state.flash_message = {"type": "error", "text": "RAG service chưa sẵn sàng."}
+        st.rerun()
+
+    target_session = db_service.get_chat_session(payload["session_id"]) if payload.get("session_id") else None
+    saved_path = save_uploaded_bytes(payload["file_name"], payload["file_bytes"])
+    document_id = None
+
     try:
-        parsed = json.loads(app_result)
-        if isinstance(parsed, dict):
-            if "action" in parsed:
-                event_payload = parsed
-            elif "chat_event" in parsed and isinstance(parsed["chat_event"], dict):
-                event_payload = parsed["chat_event"]
-    except ValueError:
-        event_payload = None
+        document_id = db_service.create_document(payload["file_name"], saved_path)
+        result = rag.add_documents(saved_path, document_id=document_id)
+        if result["status"] != "success":
+            raise RuntimeError(result["message"])
 
-# (Đã mở rộng phần này để xử lý cả tin nhắn và file)
-if event_payload:
-    action = event_payload.get("action")
-    
-    # Kịch bản 1: Người dùng chat
-    if action == "send_message":
-        rag = ensure_rag_service()
-        if rag is None:
-            st.stop()
+        db_service.replace_document_chunks(document_id, result.get("chunks", []))
 
-        user_message = event_payload.get("text")
-        if not user_message:
-            st.stop()
+        if session_can_receive_document(target_session):
+            session_id = target_session["id"]
+            db_service.attach_document_to_session(session_id, document_id, title=payload["file_name"])
+        else:
+            session_id = db_service.create_chat_session(payload["file_name"], document_id=document_id)
 
-        st.session_state.chat_messages.append({"role": "user", "text": user_message})
-        
-        with st.spinner("Đang suy luận..."):
-            try:
-                # Query RAG chain với Ollama
-                result = rag.query(user_message, search_type="vector")
-                
-                if result["status"] == "success":
-                    st.session_state.chat_messages.append({"role": "assistant", "text": result["answer"]})
-                    
-                    if result["sources"]:
-                        st.write("### Tài liệu liên quan:")
-                        for i, source in enumerate(result["sources"], 1):
-                            with st.expander(f"Nguồn {i} - {source['source']} (Chunk {source['chunk']})"):
-                                st.write(source["content"])
-                else:
-                    st.session_state.chat_messages.append({"role": "assistant", "text": result["answer"]})
-                    st.error(result["answer"])
-            except Exception as e:
-                st.session_state.chat_messages.append({"role": "assistant", "text": f"Lỗi query: {str(e)}"})
-                st.error(f"Lỗi query: {str(e)}")
-                LOG.error(f"Chat error: {str(e)}")
+        st.session_state.draft_session = False
+        st.session_state.active_session_id = session_id
+        st.session_state.latest_sources_by_session[session_id] = []
+        st.session_state.open_session_menu_id = None
+        st.session_state.last_upload_success = {
+            "session_id": session_id,
+            "file_name": payload["file_name"],
+            "message": result["message"],
+        }
+        st.session_state.uploader_nonce += 1
+        st.session_state.processing_upload = None
+        st.rerun()
+    except Exception as exc:
+        LOG.error("Upload flow failed: %s", exc)
+        if document_id is not None:
+            db_service.delete_document(document_id)
+        if os.path.exists(saved_path):
+            os.remove(saved_path)
+        st.session_state.processing_upload = None
+        st.session_state.flash_message = {"type": "error", "text": f"Lỗi xử lý file: {exc}"}
+        st.rerun()
 
+
+def queue_query(prompt: str, active_session: dict | None, rerun: bool = True):
+    if active_session is None or active_session.get("document_id") is None:
+        st.session_state.flash_message = {
+            "type": "warning",
+            "text": "Hãy upload tài liệu vào đoạn chat này trước khi đặt câu hỏi.",
+        }
+        if rerun:
             st.rerun()
-        
-    # Kịch bản 2: Người dùng upload file
-    elif action == "upload_file":
-        rag = ensure_rag_service()
-        if rag is None:
-            st.stop()
+        return
 
-        file_name = event_payload.get("file_name")
-        file_data_b64 = event_payload.get("file_data")
-        
-        with st.spinner(f"Đang xử lý {file_name}..."):
-            try:
-                # Cắt bỏ phần header của chuỗi Base64
-                if "," in file_data_b64:
-                    file_data_b64 = file_data_b64.split(",")[1]
-                    
-                file_bytes = base64.b64decode(file_data_b64)
-                
-                # Lưu tạm thời
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-                temp_dir = os.path.join(current_dir, "temp_docs")
-                os.makedirs(temp_dir, exist_ok=True)
-                
-                temp_file_path = os.path.join(temp_dir, file_name)
-                
-                with open(temp_file_path, "wb") as f:
-                    f.write(file_bytes)
-                
-                # Thêm documents vào RAG vectorstore
-                result = rag.add_documents(temp_file_path)
-                
-                if result["status"] == "success":
-                    st.success(f"✅ {result['message']}")
-                    
-                    # Show RAG status
-                    status = rag.get_status()
-                    st.info(f"📊 Vectorstore: {status['total_documents']} documents | LLM: {status['llm_model']}")
-                else:
-                    st.error(f"❌ {result['message']}")
-                
-                # Clean up temp file
-                if os.path.exists(temp_file_path):
-                    os.remove(temp_file_path)
-                    
-            except Exception as e:
-                st.error(f"Lỗi xử lý file: {str(e)}")
-                LOG.error(f"Upload error: {str(e)}")
+    st.session_state.queued_query = {
+        "session_id": active_session["id"],
+        "document_id": active_session["document_id"],
+        "prompt": prompt,
+        "search_type": "vector" if st.session_state.current_search_label == "Ngữ nghĩa" else "hybrid",
+        "detail_level": "fast" if st.session_state.current_detail_label == "Nhanh" else "detailed",
+    }
+    st.session_state.latest_sources_by_session[active_session["id"]] = []
+    st.session_state.last_upload_success = None
+    schedule_bottom_scroll()
+    if rerun:
+        st.rerun()
 
-            st.rerun()
 
-if st.session_state.chat_messages:
-    st.markdown("### Hội thoại")
-    for msg in st.session_state.chat_messages[-10:]:
-        prefix = "Bạn" if msg["role"] == "user" else "AI"
-        st.markdown(f"**{prefix}:** {msg['text']}")
+def submit_query_from_state(active_session: dict | None):
+    prompt = st.session_state.get("composer_prompt", "").strip()
+    if not prompt:
+        return
+    st.session_state.composer_prompt = ""
+    queue_query(prompt, active_session, rerun=False)
+
+
+def process_pending_query(rag: RAGService | None):
+    payload = st.session_state.get("processing_query")
+    if not payload:
+        return
+
+    if rag is None:
+        st.session_state.processing_query = None
+        st.session_state.flash_message = {"type": "error", "text": "RAG service chưa sẵn sàng."}
+        st.rerun()
+
+    result = rag.query(
+        payload["prompt"],
+        search_type=payload["search_type"],
+        document_id=payload["document_id"],
+        detail_level=payload["detail_level"],
+    )
+    db_service.add_chat_history(
+        session_id=payload["session_id"],
+        question=payload["prompt"],
+        answer=result["answer"],
+        document_id=payload["document_id"],
+        search_type=payload["search_type"],
+    )
+    st.session_state.latest_sources_by_session[payload["session_id"]] = result.get("sources", [])
+    st.session_state.processing_query = None
+    schedule_bottom_scroll()
+    st.rerun()
+
+
+def render_sidebar(sessions):
+    with st.sidebar:
+        st.markdown('<div class="sidebar-title">Lịch sử hội thoại</div>', unsafe_allow_html=True)
+        st.button(
+            "+ Đoạn chat mới",
+            key="new_chat_btn",
+            use_container_width=True,
+            type="primary",
+            on_click=create_new_chat,
+            disabled=is_busy(),
+        )
+
+        if st.session_state.get("draft_session"):
+            st.markdown(
+                """
+                <div class="draft-session-item">
+                    <span class="draft-session-dot"></span>
+                    <span>Đoạn chat mới</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        for session in sessions:
+            session_id = session["id"]
+            is_active = not st.session_state.get("draft_session") and session_id == st.session_state.active_session_id
+            is_editing = session_id == st.session_state.editing_session_id
+            is_menu_open = session_id == st.session_state.get("open_session_menu_id")
+
+            if is_editing:
+                row_cols = st.columns([6.1, 0.9], gap="small")
+                with row_cols[0]:
+                    st.text_input(
+                        "Rename chat",
+                        key=f"rename_input_{session_id}",
+                        label_visibility="collapsed",
+                        on_change=commit_session_rename,
+                        args=(session_id,),
+                        placeholder="Đổi tên đoạn chat",
+                        disabled=is_busy(),
+                    )
+                with row_cols[1]:
+                    st.button(
+                        "x",
+                        key=f"cancel_edit_{session_id}",
+                        use_container_width=True,
+                        on_click=cancel_session_rename,
+                        disabled=is_busy(),
+                    )
+                continue
+
+            row_cols = st.columns([6.1, 0.9], gap="small")
+            with row_cols[0]:
+                if st.button(
+                    session["title"],
+                    key=f"session_{session_id}",
+                    use_container_width=True,
+                    type="primary" if is_active else "secondary",
+                    disabled=is_busy(),
+                ):
+                    set_active_session(session_id)
+            with row_cols[1]:
+                st.button(
+                    "⋯",
+                    key=f"menu_toggle_{session_id}",
+                    use_container_width=False,
+                    disabled=is_busy(),
+                    on_click=toggle_session_menu,
+                    args=(session_id,),
+                )
+
+            if is_menu_open and not is_busy():
+                menu_cols = st.columns([1, 1], gap="small")
+                with menu_cols[0]:
+                    if st.button(
+                        "Đổi tên",
+                        key=f"menu_rename_{session_id}",
+                        use_container_width=True,
+                    ):
+                        begin_session_rename(session_id, session["title"])
+                with menu_cols[1]:
+                    if st.button(
+                        "Xóa",
+                        key=f"menu_delete_{session_id}",
+                        use_container_width=True,
+                    ):
+                        remove_session(session_id)
+
+def render_processing_card(file_name: str):
+    st.markdown(
+        f"""
+        <div class="upload-card upload-processing">
+            <div class="processing-spinner"></div>
+            <div class="upload-card-title">Processing</div>
+            <div class="upload-card-subtitle">{file_name}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_success_card(active_session: dict | None):
+    success = st.session_state.get("last_upload_success")
+    if not success or active_session is None or success.get("session_id") != active_session["id"]:
+        return
+
+    st.markdown(
+        f"""
+        <div class="ready-card">
+            <div class="ready-check">✓</div>
+            <div>
+                <div class="ready-title">Tài liệu sẵn sàng</div>
+                <div class="ready-subtitle">{success["file_name"]}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_landing_hero():
+    st.markdown(
+        """
+        <div class="landing-hero">
+            <div class="landing-hero-title">Hệ thống Phân tích Tài liệu</div>
+            <div class="landing-hero-subtitle">Tải tài liệu và bắt đầu trò chuyện cùng AI.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_upload_stage(rag: RAGService | None, active_session: dict | None):
+    _, center_col, _ = st.columns([1.0, 1.85, 1.0])
+    with center_col:
+        processing_upload = st.session_state.get("processing_upload")
+        if processing_upload:
+            render_processing_card(processing_upload["file_name"])
+            return
+
+        st.markdown(
+            """
+            <div class="upload-card">
+                <div class="upload-card-icon">↑</div>
+                <div class="upload-card-title">Kéo thả file vào đây</div>
+                <div class="upload-card-subtitle">Hỗ trợ định dạng PDF, DOCX</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        uploaded_file = st.file_uploader(
+            "PDF hoặc DOCX",
+            type=["pdf", "docx"],
+            key=f"document_uploader_{st.session_state.uploader_nonce}",
+            label_visibility="collapsed",
+            disabled=is_busy(),
+        )
+        if st.button(
+            "Xử lý tài liệu",
+            use_container_width=True,
+            type="primary",
+            disabled=uploaded_file is None or rag is None or is_busy(),
+        ):
+            queue_document_upload(rag, uploaded_file, active_session)
+
+
+def get_display_history(active_session: dict | None):
+    if active_session is None:
+        return []
+
+    history = db_service.get_chat_history(active_session["id"])
+    pending = st.session_state.get("processing_query")
+    if pending and pending["session_id"] == active_session["id"]:
+        history = history + [
+            {"role": "user", "content": pending["prompt"], "pending": True},
+            {"role": "assistant", "content": "", "thinking": True},
+        ]
+    return history
+
+
+def render_chat_history(active_session: dict | None):
+    history = get_display_history(active_session)
+    if not history:
+        st.markdown(
+            """
+            <div class="empty-chat-card">
+                <h3>Bắt đầu với câu hỏi đầu tiên</h3>
+                <p>Tài liệu đã sẵn sàng. Hãy hỏi bất kỳ điều gì liên quan tới nội dung của nó.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
+    for message in history:
+        with st.chat_message(message["role"]):
+            if message.get("thinking"):
+                st.markdown(
+                    """
+                    <div class="thinking-row">
+                        <span></span><span></span><span></span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(message["content"])
+
+
+def render_sources(active_session_id: int | None):
+    if active_session_id is None:
+        return
+
+    sources = st.session_state.latest_sources_by_session.get(active_session_id) or []
+    if not sources:
+        return
+
+    st.markdown('<div class="sources-title">Nguồn liên quan</div>', unsafe_allow_html=True)
+    for index, source in enumerate(sources, start=1):
+        title = f"Nguồn {index} · {source['source']} · chunk {source['chunk']}"
+        if source.get("page_start") is not None:
+            title += f" · page {source['page_start']}"
+        with st.expander(title):
+            st.write(source["content"])
+
+
+def render_document_pill(active_session: dict | None):
+    if not active_session or not active_session.get("document_name"):
+        return
+
+    st.markdown(
+        f"""
+        <div class="document-pill">
+            <span class="document-pill-label">Document</span>
+            <span class="document-pill-name">{active_session["document_name"]}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_composer(active_session: dict | None):
+    processing = st.session_state.get("processing_upload") or st.session_state.get("processing_query")
+    disabled = is_busy() or active_session is None or active_session.get("document_id") is None
+    prompt_placeholder = (
+        "Nhập câu hỏi về tài liệu..."
+        if active_session is not None and active_session.get("document_id") is not None
+        else "Tải tài liệu lên để bắt đầu trò chuyện"
+    )
+    send_label = "■" if processing else "→"
+
+    with st.container():
+        st.markdown('<div id="composer-anchor"></div>', unsafe_allow_html=True)
+        if processing:
+            st.markdown('<div id="composer-processing-flag"></div>', unsafe_allow_html=True)
+
+        composer_cols = st.columns([2.2, 1.8, 6.8, 1.2], gap="small")
+        with composer_cols[0]:
+            st.session_state.current_search_label = st.selectbox(
+                "Mode",
+                options=["Ngữ nghĩa", "Từ khóa"],
+                label_visibility="collapsed",
+                disabled=disabled,
+                key="search_mode_select",
+            )
+        with composer_cols[1]:
+            if st.session_state.current_search_label == "Ngữ nghĩa":
+                st.session_state.current_detail_label = st.selectbox(
+                    "Depth",
+                    options=["Nhanh", "Kỹ"],
+                    label_visibility="collapsed",
+                    disabled=disabled,
+                    key="detail_mode_select",
+                )
+            else:
+                st.selectbox(
+                    "DepthLocked",
+                    options=["Tự động"],
+                    label_visibility="collapsed",
+                    disabled=True,
+                    key="detail_mode_select_locked",
+                )
+                st.session_state.current_detail_label = "Nhanh"
+        with composer_cols[2]:
+            st.text_input(
+                "Nhập câu hỏi",
+                key="composer_prompt",
+                label_visibility="collapsed",
+                placeholder=prompt_placeholder,
+                disabled=disabled,
+                on_change=submit_query_from_state,
+                args=(active_session,),
+            )
+        with composer_cols[3]:
+            st.button(
+                send_label,
+                key="composer_send_btn",
+                use_container_width=True,
+                disabled=disabled,
+                on_click=submit_query_from_state,
+                args=(active_session,),
+            )
+
+
+def render_main_area(rag: RAGService | None, active_session: dict | None):
+    show_flash_message()
+
+    if active_session is None or active_session.get("document_id") is None:
+        render_landing_hero()
+        render_upload_stage(rag, active_session)
+    else:
+        render_document_pill(active_session)
+        render_success_card(active_session)
+        render_chat_history(active_session)
+        render_sources(active_session["id"])
+        st.markdown('<div id="content-bottom-anchor"></div><div class="chat-safe-spacer"></div>', unsafe_allow_html=True)
+
+    render_composer(active_session)
+
+
+def main():
+    init_state()
+    css = load_css_file()
+    if css:
+        st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
+
+    rag = ensure_rag_service()
+    transition_pending_states()
+
+    sessions = ensure_active_session()
+    active_session = get_active_session(sessions)
+
+    render_sidebar(sessions)
+    render_main_area(rag, active_session)
+    apply_scheduled_bottom_scroll()
+
+    if st.session_state.get("processing_upload"):
+        process_pending_upload(rag)
+    if st.session_state.get("processing_query"):
+        process_pending_query(rag)
+
+
+if __name__ == "__main__":
+    main()
