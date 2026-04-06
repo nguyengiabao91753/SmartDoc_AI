@@ -1,83 +1,120 @@
-from typing import List
-
-import numpy as np
-from langchain_core.documents import Document
-
+from langchain.chains import RetrievalQA
 from app.ai.llm import get_llm
 from app.ai.retriever import get_retriever
 from app.vectorstore.faiss_store import FaissStore
+from langchain.schema import BaseRetriever, Document
+from typing import List, Any, Dict
+from pydantic import Field
+import re
 
 
-class SimpleRAGChain:
-    """Compatibility wrapper that exposes invoke({"query": ...}) like RetrievalQA."""
-
-    def __init__(self, custom_retriever, embeddings, llm):
-        self.custom_retriever = custom_retriever
-        self.embeddings = embeddings
-        self.llm = llm
-
-    def _embed_query(self, query: str) -> np.ndarray:
-        if hasattr(self.embeddings, "embed_query"):
-            q_vector = self.embeddings.embed_query(query)
-        else:
-            # sentence-transformers model path
-            q_vector = self.embeddings.encode(query, convert_to_numpy=True)
-
-        q_vector = np.asarray(q_vector, dtype="float32")
-        norm = np.linalg.norm(q_vector)
-        if norm > 0:
-            q_vector = q_vector / norm
-        return q_vector
-
-    def _retrieve_documents(self, query: str) -> List[Document]:
-        q_vector = self._embed_query(query)
-        results = self.custom_retriever.retrieve(query, q_vector)
-
-        documents: List[Document] = []
-        for res in results:
-            meta = res.get("meta", {}).copy()
-            page_content = meta.pop("text", "")
-            documents.append(Document(page_content=page_content, metadata=meta))
-        return documents
-
-    def invoke(self, inputs: dict) -> dict:
-        query = inputs.get("query", "")
-        source_documents = self._retrieve_documents(query)
-        if not source_documents:
-            return {
-                "result": "Khong tim thay noi dung phu hop trong tai lieu hien tai.",
-                "source_documents": [],
-            }
-
-        context = "\n\n".join(
-            [f"[Nguon {i + 1}] {doc.page_content}" for i, doc in enumerate(source_documents)]
-        )
-
-        prompt = (
-            "Ban la tro ly hoi dap dua tren tai lieu. "
-            "Chi tra loi dua tren phan NGU CANH. "
-            "Tra loi bang cung ngon ngu voi cau hoi; neu cau hoi bang tieng Viet thi tra loi bang tieng Viet ro rang. "
-            "Neu khong du thong tin, noi ro khong tim thay trong tai lieu.\n\n"
-            f"NGU CANH:\n{context}\n\n"
-            f"CAU HOI:\n{query}\n\n"
-            "TRA LOI:"
-        )
-
-        answer = self.llm.invoke(prompt)
-        return {
-            "result": answer,
-            "source_documents": source_documents,
-        }
+def _normalize_tokens(text: str) -> List[str]:
+    cleaned = re.sub(r"[^\w\s]", " ", (text or "").lower())
+    return [tok for tok in cleaned.split() if len(tok) >= 3]
 
 
-def build_chain(
-    store: FaissStore,
-    embeddings,
-    search_type: str = "vector",
-    model: str | None = None,
-    top_k: int | None = None,
-    filters: dict | None = None,
-):
-    custom_retriever = get_retriever(store, search_type, top_k=top_k, filters=filters)
-    llm = get_llm(model=model)
-    return SimpleRAGChain(custom_retriever=custom_retriever, embeddings=embeddings, llm=llm)
+def _evaluate_grounding(answer: str, source_documents: List[Document]) -> Dict[str, Any]:
+    source_count = len(source_documents or [])
+    if not answer:
+        return {
+            "is_hallucination": False,
+            "supported_ratio": 1.0,
+            "overlap_tokens": 0,
+            "answer_tokens": 0,
+            "source_count": source_count,
+            "reason": "empty_answer",
+        }
+
+    answer_tokens = _normalize_tokens(answer)
+    source_text = " ".join((doc.page_content or "") for doc in (source_documents or []))
+    source_tokens = set(_normalize_tokens(source_text))
+
+    if not answer_tokens:
+        return {
+            "is_hallucination": False,
+            "supported_ratio": 1.0,
+            "overlap_tokens": 0,
+            "answer_tokens": 0,
+            "source_count": source_count,
+            "reason": "no_meaningful_tokens",
+        }
+
+    overlap = sum(1 for tok in answer_tokens if tok in source_tokens)
+    supported_ratio = overlap / max(1, len(answer_tokens))
+
+    # Conservative threshold to avoid false positives and keep existing flow unchanged.
+    has_enough_evidence = source_count > 0 and (supported_ratio >= 0.12 or overlap >= 8)
+
+    return {
+        "is_hallucination": not has_enough_evidence,
+        "supported_ratio": round(supported_ratio, 4),
+        "overlap_tokens": overlap,
+        "answer_tokens": len(answer_tokens),
+        "source_count": source_count,
+        "reason": "grounded" if has_enough_evidence else "low_overlap_with_sources",
+    }
+
+
+class GuardedRetrievalQA:
+    """Wrapper that keeps RetrievalQA behavior but appends hallucination metadata."""
+
+    def __init__(self, qa_chain: RetrievalQA):
+        self._qa_chain = qa_chain
+
+    def _augment_result(self, payload: Any) -> Any:
+        if not isinstance(payload, dict):
+            return payload
+
+        answer = payload.get("result") or payload.get("answer") or ""
+        source_documents = payload.get("source_documents") or []
+        payload["hallucination_check"] = _evaluate_grounding(answer, source_documents)
+        return payload
+
+    def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
+        result = self._qa_chain.invoke(input, config=config, **kwargs)
+        return self._augment_result(result)
+
+    async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
+        result = await self._qa_chain.ainvoke(input, config=config, **kwargs)
+        return self._augment_result(result)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        result = self._qa_chain(*args, **kwargs)
+        return self._augment_result(result)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._qa_chain, name)
+
+class LangChainRetriever(BaseRetriever):
+    # Sử dụng Pydantic Field thay vì __init__ để tương thích với LangChain/Pydantic
+    custom_retriever: Any = Field(description="Custom retriever implementation")
+    embeddings: Any = Field(description="Embeddings model")
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    def _get_relevant_documents(self, query: str, *, run_manager=None) -> List[Document]:
+        q_vector = self.embeddings.embed_query(query)
+        results = self.custom_retriever.retrieve(query, q_vector)
+        
+        documents = []
+        for res in results:
+            # Sao chép meta để tránh thay đổi dữ liệu gốc trong bộ nhớ cache (nếu có)
+            meta = res.get('meta', {}).copy()
+            page_content = meta.pop('text', '') # Tách nội dung văn bản ra khỏi metadata
+            documents.append(Document(page_content=page_content, metadata=res['meta']))
+            
+        return documents
+
+    async def _aget_relevant_documents(self, query: str, *, run_manager=None) -> List[Document]:
+        # Asynchronous version can be implemented if needed
+        return self._get_relevant_documents(query, run_manager=run_manager)
+
+def build_chain(store: FaissStore, embeddings, search_type: str = "vector"):
+    custom_retriever = get_retriever(store, search_type)
+    # Khởi tạo qua keyword arguments cho Pydantic model
+    langchain_retriever = LangChainRetriever(custom_retriever=custom_retriever, embeddings=embeddings)
+    
+    llm = get_llm()
+    qa = RetrievalQA.from_chain_type(llm=llm, retriever=langchain_retriever, return_source_documents=True)
+    return GuardedRetrievalQA(qa)
