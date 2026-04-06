@@ -16,10 +16,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
 
 from app.core.config import settings
 from app.core.logger import LOG
+from app.rag.registry import AVAILABLE_RAG_MODES, MODE_LABELS, normalize_rag_mode
 from app.services.database_service import db_service
 from app.services.rag_service import RAGService
 
 st.set_page_config(layout="wide", page_title="SmartDoc AI")
+
+RAG_MODE_OPTIONS = [MODE_LABELS[mode] for mode in AVAILABLE_RAG_MODES]
+RAG_MODE_BY_LABEL = {MODE_LABELS[mode]: mode for mode in AVAILABLE_RAG_MODES}
+DEFAULT_RAG_MODE = normalize_rag_mode(getattr(settings, "RAG_MODE", "rag"))
+DEFAULT_RAG_MODE_LABEL = MODE_LABELS.get(DEFAULT_RAG_MODE, "RAG")
 
 
 def load_css_file() -> str:
@@ -54,6 +60,7 @@ def init_state():
         "queued_query": None,
         "processing_query": None,
         "last_upload_success": None,
+        "current_rag_mode_label": DEFAULT_RAG_MODE_LABEL,
         "current_search_label": "Ngữ nghĩa",
         "current_detail_label": "Nhanh",
         "composer_prompt": "",
@@ -347,6 +354,7 @@ def queue_query(prompt: str, active_session: dict | None, rerun: bool = True):
         "session_id": active_session["id"],
         "document_id": active_session["document_id"],
         "prompt": prompt,
+        "rag_mode": RAG_MODE_BY_LABEL.get(st.session_state.current_rag_mode_label, "rag"),
         "search_type": "vector" if st.session_state.current_search_label == "Ngữ nghĩa" else "hybrid",
         "detail_level": "fast" if st.session_state.current_detail_label == "Nhanh" else "detailed",
     }
@@ -377,6 +385,7 @@ def process_pending_query(rag: RAGService | None):
 
     result = rag.query(
         payload["prompt"],
+        rag_mode=payload.get("rag_mode"),
         search_type=payload["search_type"],
         document_id=payload["document_id"],
         detail_level=payload["detail_level"],
@@ -387,6 +396,7 @@ def process_pending_query(rag: RAGService | None):
         answer=result["answer"],
         document_id=payload["document_id"],
         search_type=payload["search_type"],
+        rag_mode=payload.get("rag_mode", "rag"),
     )
     st.session_state.latest_sources_by_session[payload["session_id"]] = result.get("sources", [])
     st.session_state.processing_query = None
@@ -650,8 +660,16 @@ def render_composer(active_session: dict | None):
         if processing:
             st.markdown('<div id="composer-processing-flag"></div>', unsafe_allow_html=True)
 
-        composer_cols = st.columns([2.2, 1.8, 6.8, 1.2], gap="small")
+        composer_cols = st.columns([2.0, 2.0, 1.8, 6.0, 1.2], gap="small")
         with composer_cols[0]:
+            st.session_state.current_rag_mode_label = st.selectbox(
+                "RAGMode",
+                options=RAG_MODE_OPTIONS,
+                label_visibility="collapsed",
+                disabled=disabled,
+                key="rag_mode_select",
+            )
+        with composer_cols[1]:
             st.session_state.current_search_label = st.selectbox(
                 "Mode",
                 options=["Ngữ nghĩa", "Từ khóa"],
@@ -659,7 +677,7 @@ def render_composer(active_session: dict | None):
                 disabled=disabled,
                 key="search_mode_select",
             )
-        with composer_cols[1]:
+        with composer_cols[2]:
             if st.session_state.current_search_label == "Ngữ nghĩa":
                 st.session_state.current_detail_label = st.selectbox(
                     "Depth",
@@ -677,7 +695,7 @@ def render_composer(active_session: dict | None):
                     key="detail_mode_select_locked",
                 )
                 st.session_state.current_detail_label = "Nhanh"
-        with composer_cols[2]:
+        with composer_cols[3]:
             st.text_input(
                 "Nhập câu hỏi",
                 key="composer_prompt",
@@ -687,7 +705,7 @@ def render_composer(active_session: dict | None):
                 on_change=submit_query_from_state,
                 args=(active_session,),
             )
-        with composer_cols[3]:
+        with composer_cols[4]:
             st.button(
                 send_label,
                 key="composer_send_btn",

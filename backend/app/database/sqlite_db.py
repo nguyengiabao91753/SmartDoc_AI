@@ -133,6 +133,7 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             document_id INTEGER,
             search_type TEXT DEFAULT 'vector',
+            rag_mode TEXT DEFAULT 'rag',
             FOREIGN KEY(session_id) REFERENCES chat_sessions(id),
             FOREIGN KEY(document_id) REFERENCES documents(id)
         );
@@ -141,6 +142,7 @@ def init_db():
 
     _ensure_column(cur, "chat_history", "session_id", "session_id INTEGER")
     _ensure_column(cur, "chat_history", "search_type", "search_type TEXT DEFAULT 'vector'")
+    _ensure_column(cur, "chat_history", "rag_mode", "rag_mode TEXT DEFAULT 'rag'")
 
     cur.execute(
         """

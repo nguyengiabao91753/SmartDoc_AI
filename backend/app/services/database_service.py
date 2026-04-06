@@ -158,7 +158,7 @@ class DatabaseService:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT question, answer, created_at, search_type
+            SELECT question, answer, created_at, search_type, rag_mode
             FROM chat_history
             WHERE session_id = ?
             ORDER BY created_at ASC, id ASC
@@ -185,6 +185,7 @@ class DatabaseService:
                         "content": row["answer"],
                         "created_at": row["created_at"],
                         "search_type": row["search_type"],
+                        "rag_mode": row["rag_mode"],
                     }
                 )
         return history
@@ -196,15 +197,16 @@ class DatabaseService:
         answer: str,
         document_id: int | None = None,
         search_type: str = "vector",
+        rag_mode: str = "rag",
     ):
         conn = get_conn()
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO chat_history (session_id, question, answer, document_id, search_type)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO chat_history (session_id, question, answer, document_id, search_type, rag_mode)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (session_id, question, answer, document_id, search_type),
+            (session_id, question, answer, document_id, search_type, rag_mode),
         )
         cur.execute(
             """
@@ -217,10 +219,11 @@ class DatabaseService:
         conn.commit()
         conn.close()
         LOG.info(
-            "Added chat history entry for session %s (document=%s, search_type=%s)",
+            "Added chat history entry for session %s (document=%s, search_type=%s, rag_mode=%s)",
             session_id,
             document_id,
             search_type,
+            rag_mode,
         )
 
     def replace_document_chunks(self, document_id: int, chunks: List[Dict[str, Any]]):

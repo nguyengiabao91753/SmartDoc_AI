@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     # FAISS params
     TOP_K: int = int(os.getenv("TOP_K", 3))
     TOP_K_DETAILED: int = int(os.getenv("TOP_K_DETAILED", 6))
+    RAG_MODE: str = os.getenv("RAG_MODE", "rag")
 
     model_config = SettingsConfigDict(
         env_file=(str(ROOT / ".env"), str(ROOT / "backend" / ".env"))

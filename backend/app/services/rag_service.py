@@ -5,25 +5,37 @@ from urllib import error, request
 
 from langchain_core.documents import Document
 
-from app.ai.rag_chain import build_chain
 from app.core.config import settings
 from app.core.logger import LOG
+from app.rag.base import ModeNotImplementedError
+from app.rag.models import RAGQueryRequest
+from app.rag.registry import AVAILABLE_RAG_MODES, build_engine_registry, normalize_rag_mode
 from app.services.document_service import DocumentService
 from app.services.embedding_service import EmbeddingService
 from app.vectorstore.faiss_store import FaissStore
 
 
 class RAGService:
-    """Coordinates document loading, embedding, vector storage, retrieval, and LLM answering."""
+    """Coordinates ingestion and delegates querying to mode-specific RAG engines."""
 
     def __init__(self):
-        LOG.info("Khởi tạo RAGService...")
+        LOG.info("Khoi tao RAGService...")
         self.doc_service = DocumentService()
         self.embedding_service = EmbeddingService()
         self.embedding_dim = self.embedding_service.get_dimension()
         self.vectorstore = FaissStore(self.embedding_dim)
         self.vectorstore.load()
-        LOG.info("RAGService khởi tạo xong")
+        self._rebuild_engines()
+        LOG.info("RAGService khoi tao xong")
+
+    def _rebuild_engines(self):
+        self.engines = build_engine_registry(self.vectorstore, self.embedding_service)
+
+    def _resolve_rag_mode(self, rag_mode: str | None = None) -> str:
+        resolved = normalize_rag_mode(rag_mode)
+        if resolved not in self.engines:
+            return "rag"
+        return resolved
 
     def _resolve_search_type(self, search_type: str | None) -> str:
         normalized = (search_type or "vector").lower()
@@ -34,30 +46,37 @@ class RAGService:
     def _resolve_top_k(self, detail_level: str = "fast", top_k: int | None = None) -> int:
         if top_k is not None:
             return top_k
-        if detail_level in {"detailed", "ky", "kỹ"}:
+        if detail_level in {"detailed", "ky", "ki"}:
             return settings.TOP_K_DETAILED
         return settings.TOP_K
 
-    def _build_filters(self, document_id: int | None = None) -> Dict[str, Any] | None:
-        if document_id is None:
-            return None
-        return {"document_id": document_id}
-
-    def _build_query_chain(
+    def _execute_query(
         self,
+        *,
+        question: str,
+        rag_mode: str,
         search_type: str,
         top_k: int,
-        document_id: int | None = None,
-        model: str | None = None,
-    ):
-        return build_chain(
-            self.vectorstore,
-            self.embedding_service,
-            search_type=search_type,
-            model=model,
-            top_k=top_k,
-            filters=self._build_filters(document_id),
+        document_id: int | None,
+        llm_model: str | None = None,
+    ) -> Dict[str, Any]:
+        engine = self.engines[rag_mode]
+        result = engine.query(
+            RAGQueryRequest(
+                question=question,
+                search_type=search_type,
+                top_k=top_k,
+                document_id=document_id,
+                llm_model=llm_model,
+            )
         )
+        return {
+            "status": "success",
+            "answer": result.answer,
+            "sources": self._format_sources(result.source_documents),
+            "rag_mode": rag_mode,
+            "metadata": result.metadata,
+        }
 
     def _get_ollama_models(self) -> List[str]:
         try:
@@ -70,7 +89,9 @@ class RAGService:
 
     def _try_low_memory_fallback(
         self,
+        *,
         question: str,
+        rag_mode: str,
         search_type: str,
         top_k: int,
         document_id: int | None,
@@ -101,20 +122,18 @@ class RAGService:
             return None
 
         try:
-            chain = self._build_query_chain(
+            fallback_result = self._execute_query(
+                question=question,
+                rag_mode=rag_mode,
                 search_type=search_type,
                 top_k=top_k,
                 document_id=document_id,
-                model=fallback_model,
+                llm_model=fallback_model,
             )
-            result = chain.invoke({"query": question})
-            return {
-                "status": "success",
-                "answer": f"[Dang dung model nhe {fallback_model}]\n\n{result.get('result', '')}",
-                "sources": self._format_sources(result.get("source_documents", [])),
-            }
+            fallback_result["answer"] = f"[Dang dung model nhe {fallback_model}]\n\n{fallback_result['answer']}"
+            return fallback_result
         except Exception as exc:
-            LOG.error("Fallback model thất bại: %s", exc)
+            LOG.error("Fallback model that bai: %s", exc)
             return None
 
     def _format_sources(self, source_docs: List[Document]) -> List[Dict[str, Any]]:
@@ -134,13 +153,13 @@ class RAGService:
 
     def add_documents(self, file_path: str, document_id: int | None = None) -> Dict[str, Any]:
         try:
-            LOG.info("Đang xử lý tài liệu: %s", file_path)
+            LOG.info("Dang xu ly tai lieu: %s", file_path)
             documents = self.doc_service.load_document(
                 file_path,
                 extra_metadata={"document_id": document_id} if document_id is not None else None,
             )
             if not documents:
-                raise ValueError("Không có nội dung được tải từ file")
+                raise ValueError("Khong co noi dung duoc tai tu file")
 
             vectors = self.embedding_service.embed_documents(documents)
             metas = []
@@ -174,13 +193,13 @@ class RAGService:
                 "status": "success",
                 "file": os.path.basename(file_path),
                 "chunks_added": len(documents),
-                "message": f"Đã thêm {len(documents)} chunks từ {os.path.basename(file_path)}",
+                "message": f"Da them {len(documents)} chunks tu {os.path.basename(file_path)}",
                 "chunks": chunk_rows,
             }
             LOG.info(result["message"])
             return result
         except Exception as exc:
-            error_msg = f"Lỗi xử lý file {file_path}: {exc}"
+            error_msg = f"Loi xu ly file {file_path}: {exc}"
             LOG.error(error_msg)
             return {"status": "error", "message": error_msg}
 
@@ -191,35 +210,45 @@ class RAGService:
         top_k: int | None = None,
         document_id: int | None = None,
         detail_level: str = "fast",
+        rag_mode: str | None = None,
     ) -> Dict[str, Any]:
-        try:
-            if self.vectorstore.index.ntotal == 0:
-                return {
-                    "status": "error",
-                    "answer": "Chưa có documents. Vui lòng tải tài liệu trước.",
-                    "sources": [],
-                }
+        if self.vectorstore.index.ntotal == 0:
+            return {
+                "status": "error",
+                "answer": "Chua co documents. Vui long tai tai lieu truoc.",
+                "sources": [],
+                "rag_mode": self._resolve_rag_mode(rag_mode),
+            }
 
-            resolved_search_type = self._resolve_search_type(search_type)
-            resolved_top_k = self._resolve_top_k(detail_level=detail_level, top_k=top_k)
-            chain = self._build_query_chain(
+        resolved_search_type = self._resolve_search_type(search_type)
+        resolved_top_k = self._resolve_top_k(detail_level=detail_level, top_k=top_k)
+        resolved_mode = self._resolve_rag_mode(rag_mode)
+
+        try:
+            return self._execute_query(
+                question=question,
+                rag_mode=resolved_mode,
                 search_type=resolved_search_type,
                 top_k=resolved_top_k,
                 document_id=document_id,
             )
-            result = chain.invoke({"query": question})
-            answer = result.get("result", "")
-            sources = self._format_sources(result.get("source_documents", []))
-            return {"status": "success", "answer": answer, "sources": sources}
+        except ModeNotImplementedError as exc:
+            return {
+                "status": "error",
+                "answer": str(exc),
+                "sources": [],
+                "rag_mode": resolved_mode,
+            }
         except Exception as exc:
-            error_msg = f"Lỗi query: {exc}"
+            error_msg = f"Loi query ({resolved_mode}): {exc}"
             LOG.error(error_msg)
 
             if "requires more system memory" in str(exc).lower():
                 fallback_result = self._try_low_memory_fallback(
                     question=question,
-                    search_type=self._resolve_search_type(search_type),
-                    top_k=self._resolve_top_k(detail_level=detail_level, top_k=top_k),
+                    rag_mode=resolved_mode,
+                    search_type=resolved_search_type,
+                    top_k=resolved_top_k,
                     document_id=document_id,
                 )
                 if fallback_result is not None:
@@ -230,15 +259,21 @@ class RAGService:
                 return {
                     "status": "error",
                     "answer": (
-                        "Model Ollama hiện tại vượt quá RAM khả dụng của máy. "
-                        "Hãy pull model nhẹ hơn, ví dụ: `ollama pull qwen2.5:0.5b` hoặc `ollama pull qwen2.5:1.5b`, "
-                        "sau đó đặt LLM_MODEL tương ứng rồi thử lại. "
-                        f"Model hiện có: {installed_text}"
+                        "Model Ollama hien tai vuot qua RAM kha dung cua may. "
+                        "Hay pull model nhe hon, vi du: `ollama pull qwen2.5:0.5b` hoac `ollama pull qwen2.5:1.5b`, "
+                        "sau do dat LLM_MODEL tuong ung roi thu lai. "
+                        f"Model hien co: {installed_text}"
                     ),
                     "sources": [],
+                    "rag_mode": resolved_mode,
                 }
 
-            return {"status": "error", "answer": f"Có lỗi xảy ra: {exc}", "sources": []}
+            return {
+                "status": "error",
+                "answer": f"Co loi xay ra: {exc}",
+                "sources": [],
+                "rag_mode": resolved_mode,
+            }
 
     def clear_vectorstore(self):
         try:
@@ -247,10 +282,11 @@ class RAGService:
 
                 shutil.rmtree(settings.VECTOR_DIR)
             self.vectorstore = FaissStore(self.embedding_dim)
-            LOG.info("Xóa vectorstore thành công")
+            self._rebuild_engines()
+            LOG.info("Xoa vectorstore thanh cong")
             return {"status": "success", "message": "Vectorstore cleared"}
         except Exception as exc:
-            LOG.error("Lỗi xóa vectorstore: %s", exc)
+            LOG.error("Loi xoa vectorstore: %s", exc)
             return {"status": "error", "message": str(exc)}
 
     def get_status(self) -> Dict[str, Any]:
@@ -261,4 +297,6 @@ class RAGService:
             "embedding_model": self.embedding_service.model_name,
             "llm_model": settings.LLM_MODEL,
             "llm_url": settings.OLLAMA_BASE_URL,
+            "available_modes": list(AVAILABLE_RAG_MODES),
         }
+
