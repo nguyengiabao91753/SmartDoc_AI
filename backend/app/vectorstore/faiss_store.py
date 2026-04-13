@@ -102,6 +102,44 @@ class FaissStore:
         else:
             self.bm25_retriever = BM25Retriever()
 
+    def count_by_document(self, document_id: int | None) -> int:
+        if document_id is None:
+            return 0
+        return sum(1 for meta in self.meta if meta.get("document_id") == document_id)
+
+    def _backfill_document_ids_from_chunks(self) -> int:
+        """Backfill legacy metadata entries that are missing document_id."""
+        missing_indices = [idx for idx, meta in enumerate(self.meta) if meta.get("document_id") is None]
+        if not missing_indices:
+            return 0
+
+        try:
+            from app.database.sqlite_db import get_conn
+        except Exception as exc:
+            LOG.warning("Unable to import DB connector for vector metadata backfill: %s", exc)
+            return 0
+
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT vector_id, document_id FROM chunks WHERE vector_id IS NOT NULL")
+        rows = cur.fetchall()
+        conn.close()
+
+        vector_to_doc = {
+            int(row["vector_id"]): int(row["document_id"])
+            for row in rows
+            if row["vector_id"] is not None and row["document_id"] is not None
+        }
+
+        updated = 0
+        for idx in missing_indices:
+            document_id = vector_to_doc.get(idx)
+            if document_id is None:
+                continue
+            self.meta[idx]["document_id"] = document_id
+            updated += 1
+        return updated
+
     def add(self, vectors: np.ndarray, metas: List[Dict[str, Any]]) -> List[int]:
         if vectors.size == 0:
             return []
@@ -221,6 +259,12 @@ class FaissStore:
                 self.bm25_retriever = BM25Retriever.load(BM25_FILE)
             else:
                 self._refresh_bm25()
+
+            backfilled = self._backfill_document_ids_from_chunks()
+            if backfilled:
+                with open(META_FILE, "wb") as file_handle:
+                    pickle.dump(self.meta, file_handle)
+                LOG.info("Backfilled document_id for %d vector metadata rows", backfilled)
 
             self.dim = self.index.d
             LOG.info("Loaded FAISS index with %d vectors", self.index.ntotal)

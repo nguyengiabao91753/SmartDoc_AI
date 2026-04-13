@@ -220,6 +220,18 @@ class RAGService:
                 "rag_mode": self._resolve_rag_mode(rag_mode),
             }
 
+        if document_id is not None and self.vectorstore.count_by_document(document_id) == 0:
+            return {
+                "status": "error",
+                "answer": (
+                    "Khong tim thay vector cho tai lieu trong phien chat nay. "
+                    "Du lieu index co the da bi reset hoac khong dong bo. "
+                    "Vui long tai lai tai lieu (hoac tao doan chat moi va upload lai) de tiep tuc hoi dap."
+                ),
+                "sources": [],
+                "rag_mode": self._resolve_rag_mode(rag_mode),
+            }
+
         resolved_search_type = self._resolve_search_type(search_type)
         resolved_top_k = self._resolve_top_k(detail_level=detail_level, top_k=top_k)
         resolved_mode = self._resolve_rag_mode(rag_mode)

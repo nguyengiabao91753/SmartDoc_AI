@@ -7,8 +7,19 @@ from langchain_core.documents import Document
 
 from app.core.config import settings
 from app.core.logger import LOG
-from underthesea import sent_tokenize
 import tiktoken
+
+try:
+    from underthesea import sent_tokenize  # type: ignore
+except ImportError:
+    def sent_tokenize(text: str) -> List[str]:
+        # Fallback tokenizer to keep the app functional when underthesea is missing.
+        text = text.strip()
+        if not text:
+            return []
+        return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+
+    LOG.warning("underthesea is not installed; using regex sentence tokenizer fallback")
 
 # --- LOGIC HIỆN TẠI (GIỮ NGUYÊN) ---
 
