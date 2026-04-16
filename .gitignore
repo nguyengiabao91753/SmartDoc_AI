@@ -53,3 +53,6 @@ data/hf_cache/
 data/vectorstore/
 data/sqlite/
 backend/app/**/__pycache__/
+
+#Check db
+check_db.py

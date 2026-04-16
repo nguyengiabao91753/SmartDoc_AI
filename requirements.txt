@@ -18,3 +18,59 @@ python-dotenv
 rank_bm25
 scikit-learn
 nltk
+
+# LangChain ecosystem
+langchain
+langchain-core
+langchain-community
+langchain-ollama
+langchain-text-splitters
+ 
+# UI
+streamlit
+ 
+# Vector store
+faiss-cpu
+ 
+# Embeddings
+sentence-transformers
+numpy
+ 
+# PDF & DOCX loaders
+pdfplumber
+pypdf
+python-docx
+ 
+# LLM (Ollama client)
+ollama
+ 
+# Deep learning (required by sentence-transformers)
+torch
+torchvision
+ 
+# Data validation & settings
+pydantic
+pydantic-settings
+ 
+# Database ORM
+sqlalchemy
+ 
+# Environment variables
+python-dotenv
+ 
+# Retrieval / ranking
+rank_bm25
+scikit-learn
+ 
+# NLP
+nltk
+tiktoken
+ 
+# Vietnamese NLP (used in document_service.py for sent_tokenize)
+underthesea
+ 
+# HTTP client (used in test_key.py)
+httpx
+ 
+# OCR (optional - loaded with try/except, requires Tesseract binary installed separately)
+# pytesseract
