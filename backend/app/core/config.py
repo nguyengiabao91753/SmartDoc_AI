@@ -1,17 +1,17 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
+from dotenv import load_dotenv
 import os
 
 ROOT = Path(__file__).resolve().parents[3]  # smartdoc-ai/backend/app/..
-
 class Settings(BaseSettings):
     # Ollama / LLM
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen2.5:7b")
-    LLM_NUM_CTX: int = int(os.getenv("LLM_NUM_CTX", 512))
-    LLM_NUM_PREDICT: int = int(os.getenv("LLM_NUM_PREDICT", 256))
-    LLM_NUM_BATCH: int = int(os.getenv("LLM_NUM_BATCH", 8))
-    LLM_KEEP_ALIVE: str = os.getenv("LLM_KEEP_ALIVE", "0s")
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen2.5:1.5b")
+    LLM_NUM_CTX: int = int(os.getenv("LLM_NUM_CTX", 2048))
+    LLM_NUM_PREDICT: int = int(os.getenv("LLM_NUM_PREDICT", 512))
+    LLM_NUM_BATCH: int = int(os.getenv("LLM_NUM_BATCH", 512))
+    LLM_KEEP_ALIVE: str = os.getenv("LLM_KEEP_ALIVE", "5m")
 
     # Embedding model (sentence-transformers)
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
@@ -23,14 +23,22 @@ class Settings(BaseSettings):
     SQLITE_PATH: str = str(ROOT / "data" / "sqlite" / "chat.db")
 
     # Chunking
-    CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", 1000))
+    CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", 500))
     CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", 200))
     OVERLAP_SENTENCES: int = int(os.getenv("OVERLAP_SENTENCES", 2))
 
     # FAISS params
-    TOP_K: int = int(os.getenv("TOP_K", 3))
+    TOP_K: int = int(os.getenv("TOP_K", 2))
     TOP_K_DETAILED: int = int(os.getenv("TOP_K_DETAILED", 6))
     RAG_MODE: str = os.getenv("RAG_MODE", "rag")
+    
+    #NEO4J
+    link_graphrag: str = str(ROOT / "backend" / "app" / "rag" / "modes" / "graphrag" / ".env")
+    load_dotenv(link_graphrag) 
+    NEO4J_URI: str = str(os.getenv("NEO4J_URI"))
+    NEO4J_USERNAME: str = str(os.getenv("NEO4J_USERNAME"))
+    NEO4J_PASSWORD: str = str(os.getenv("NEO4J_PASSWORD"))
+
 
     model_config = SettingsConfigDict(
         env_file=(str(ROOT / ".env"), str(ROOT / "backend" / ".env"))

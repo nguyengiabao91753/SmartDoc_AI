@@ -250,5 +250,12 @@ class DatabaseService:
         conn.close()
         LOG.info("Stored %d chunk rows for document %s", len(chunks), document_id)
 
+    def get_document_by_filepath(self, filepath: str) -> Dict[str, Any] | None:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT id, filename, filepath FROM documents WHERE filepath = ?", (filepath,))
+        row = cur.fetchone()
+        conn.close()
+        return dict(row) if row else None
 
 db_service = DatabaseService()
