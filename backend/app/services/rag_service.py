@@ -58,6 +58,8 @@ class RAGService:
         search_type: str,
         top_k: int,
         document_id: int | None,
+        document_ids: List[int] | None = None,
+        session_id: int | None = None,
         llm_model: str | None = None,
     ) -> Dict[str, Any]:
         engine = self.engines[rag_mode]
@@ -67,6 +69,8 @@ class RAGService:
                 search_type=search_type,
                 top_k=top_k,
                 document_id=document_id,
+                document_ids=document_ids,
+                session_id=session_id,
                 llm_model=llm_model,
             )
         )
@@ -95,6 +99,8 @@ class RAGService:
         search_type: str,
         top_k: int,
         document_id: int | None,
+        document_ids: List[int] | None = None,
+        session_id: int | None = None,
     ) -> Dict[str, Any] | None:
         available = self._get_ollama_models()
         if not available:
@@ -128,6 +134,8 @@ class RAGService:
                 search_type=search_type,
                 top_k=top_k,
                 document_id=document_id,
+                document_ids=document_ids,
+                session_id=session_id,
                 llm_model=fallback_model,
             )
             fallback_result["answer"] = f"[Dang dung model nhe {fallback_model}]\n\n{fallback_result['answer']}"
@@ -151,7 +159,12 @@ class RAGService:
             )
         return formatted_sources
 
-    def add_documents(self, file_path: str, document_id: int | None = None) -> Dict[str, Any]:
+    def add_documents(
+        self,
+        file_path: str,
+        document_id: int | None = None,
+        session_id: int | None = None,
+    ) -> Dict[str, Any]:
         try:
             LOG.info("Dang xu ly tai lieu: %s", file_path)
             documents = self.doc_service.load_document(
@@ -172,6 +185,7 @@ class RAGService:
                         "page_start": document.metadata.get("page_start"),
                         "page_end": document.metadata.get("page_end"),
                         "document_id": document.metadata.get("document_id"),
+                        "session_id": session_id,
                     }
                 )
 
@@ -209,6 +223,8 @@ class RAGService:
         search_type: str = "vector",
         top_k: int | None = None,
         document_id: int | None = None,
+        document_ids: List[int] | None = None,
+        session_id: int | None = None,
         detail_level: str = "fast",
         rag_mode: str | None = None,
     ) -> Dict[str, Any]:
@@ -231,6 +247,8 @@ class RAGService:
                 search_type=resolved_search_type,
                 top_k=resolved_top_k,
                 document_id=document_id,
+                document_ids=document_ids,
+                session_id=session_id,
             )
         except ModeNotImplementedError as exc:
             return {
@@ -250,6 +268,8 @@ class RAGService:
                     search_type=resolved_search_type,
                     top_k=resolved_top_k,
                     document_id=document_id,
+                    document_ids=document_ids,
+                    session_id=session_id,
                 )
                 if fallback_result is not None:
                     return fallback_result

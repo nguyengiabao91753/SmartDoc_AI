@@ -10,6 +10,8 @@ class RAGQueryRequest:
     search_type: str
     top_k: int
     document_id: int | None = None
+    document_ids: List[int] | None = None
+    session_id: int | None = None
     llm_model: str | None = None
     stream: bool = False
 

@@ -79,7 +79,7 @@ pytesseract
 networkx
 
 # Detect communities with leiden algorithm
-graspologic
+graspologic==3.3.0
 
 # Graph database
 neo4j

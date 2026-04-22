@@ -93,7 +93,26 @@ class FaissStore:
     def _matches_filters(self, meta: Dict[str, Any], filters: Dict[str, Any] | None) -> bool:
         if not filters:
             return True
-        return all(meta.get(key) == value for key, value in filters.items())
+        for key, expected in filters.items():
+            actual = meta.get(key)
+
+            # Support {"field": {"$in": [...]}} filter style.
+            if isinstance(expected, dict) and "$in" in expected:
+                allowed_values = expected.get("$in") or []
+                if actual not in allowed_values:
+                    return False
+                continue
+
+            # If meta field is a list/set, membership match is accepted.
+            if isinstance(actual, (list, tuple, set)):
+                if expected not in actual:
+                    return False
+                continue
+
+            if actual != expected:
+                return False
+
+        return True
 
     def _refresh_bm25(self):
         texts = [meta.get("text", "") for meta in self.meta if meta.get("text")]

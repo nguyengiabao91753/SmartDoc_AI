@@ -16,10 +16,26 @@ class RAGRetriever:
         self.store = store
         self.embedding_service = embedding_service
 
-    def _build_filters(self, document_id: int | None) -> Dict[str, int] | None:
-        if document_id is None:
-            return None
-        return {"document_id": document_id}
+    def _build_filters(
+        self,
+        document_id: int | None,
+        document_ids: List[int] | None,
+        session_id: int | None,
+    ) -> Dict | None:
+        normalized_ids = [int(doc_id) for doc_id in (document_ids or []) if doc_id is not None]
+        if not normalized_ids and document_id is not None:
+            normalized_ids = [int(document_id)]
+
+        if normalized_ids:
+            unique_ids = sorted(set(normalized_ids))
+            if len(unique_ids) == 1:
+                return {"document_id": unique_ids[0]}
+            return {"document_id": {"$in": unique_ids}}
+
+        if session_id is not None:
+            return {"session_id": int(session_id)}
+
+        return None
 
     def _embed_query(self, question: str) -> np.ndarray:
         q_vector = self.embedding_service.embed_query(question)
@@ -43,7 +59,7 @@ class RAGRetriever:
             self.store,
             search_type=plan.search_type,
             top_k=plan.top_k,
-            filters=self._build_filters(plan.document_id),
+            filters=self._build_filters(plan.document_id, plan.document_ids, plan.session_id),
         )
         results = retriever.retrieve(plan.question, q_vector)
         return self._results_to_documents(results)

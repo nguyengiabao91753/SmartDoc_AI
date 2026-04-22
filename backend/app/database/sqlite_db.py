@@ -84,6 +84,18 @@ def _backfill_sessions(cur: sqlite3.Cursor):
         )
 
 
+def _backfill_session_documents(cur: sqlite3.Cursor):
+    # Ensure every existing session-document relation is represented in the mapping table.
+    cur.execute(
+        """
+        INSERT OR IGNORE INTO session_documents (session_id, document_id, is_primary)
+        SELECT id AS session_id, document_id, 1
+        FROM chat_sessions
+        WHERE document_id IS NOT NULL
+        """
+    )
+
+
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
@@ -107,6 +119,19 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(document_id) REFERENCES documents(id)
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS session_documents (
+            session_id INTEGER NOT NULL,
+            document_id INTEGER NOT NULL,
+            is_primary INTEGER NOT NULL DEFAULT 0,
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (session_id, document_id),
+            FOREIGN KEY(session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+            FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
         );
         """
     )
@@ -162,8 +187,21 @@ def init_db():
         ON chunks(document_id)
         """
     )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_session_documents_session_id
+        ON session_documents(session_id)
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_session_documents_document_id
+        ON session_documents(document_id)
+        """
+    )
 
     _backfill_sessions(cur)
+    _backfill_session_documents(cur)
 
     conn.commit()
     conn.close()

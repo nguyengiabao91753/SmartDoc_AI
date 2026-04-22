@@ -252,30 +252,16 @@ def remove_session(session_id: int):
     if is_busy():
         return
 
-    # 1. Lấy thông tin đoạn chat hiện tại
-    target_session = db_service.get_chat_session(session_id)
+    db_service.delete_chat_session(session_id)
+    st.session_state.latest_sources_by_session.pop(session_id, None)
 
-    # 2. Xóa tận gốc: Nếu chat này có tài liệu, xóa TẤT CẢ các chat dùng chung tài liệu này
-    if target_session and target_session.get("document_id"):
-        doc_id = target_session["document_id"]
-        all_sessions = db_service.get_chat_sessions()
-
-        for s in all_sessions:
-            if s.get("document_id") == doc_id:
-                db_service.delete_chat_session(s["id"])
-                st.session_state.latest_sources_by_session.pop(s["id"], None)
-    else:
-        # Nếu là chat trống (chưa up tài liệu), chỉ xóa chính nó
-        db_service.delete_chat_session(session_id)
-        st.session_state.latest_sources_by_session.pop(session_id, None)
-
-    # 3. Dọn dẹp trạng thái UI
+    # Clean UI state
     st.session_state.editing_session_id = None
     st.session_state.open_session_menu_id = None
     st.session_state.queued_query = None
     st.session_state.processing_query = None
 
-    # 4. Bắt buộc quay về màn hình chính (màn hình Upload)
+    # Return to draft/new chat view
     st.session_state.active_session_id = None
     st.session_state.last_upload_success = None
     st.session_state.last_graph_success = None
@@ -302,12 +288,15 @@ def save_uploaded_bytes(filename: str, content: bytes) -> str:
     return saved_path
 
 
-def session_can_receive_document(active_session: dict | None) -> bool:
+def get_session_document_ids(active_session: dict | None) -> list[int]:
     if not active_session:
-        return False
-    if active_session.get("document_id") is not None:
-        return False
-    return int(active_session.get("exchange_count") or 0) == 0
+        return []
+    raw_ids = active_session.get("document_ids") or []
+    return [int(doc_id) for doc_id in raw_ids if doc_id is not None]
+
+
+def session_has_documents(active_session: dict | None) -> bool:
+    return len(get_session_document_ids(active_session)) > 0
 
 
 def normalize_uploaded_files(uploaded_files) -> list:
@@ -356,7 +345,16 @@ def process_pending_upload(rag: RAGService | None):
 
     target_session = db_service.get_chat_session(payload["session_id"]) if payload.get("session_id") else None
     files = payload.get("files") or []
-    attach_to_existing_session = len(files) == 1 and session_can_receive_document(target_session)
+
+    append_to_existing_session = target_session is not None
+    create_single_session_for_batch = (not append_to_existing_session) and len(files) == 1
+
+    batch_session_id = None
+    if append_to_existing_session:
+        batch_session_id = target_session["id"]
+    elif create_single_session_for_batch and files:
+        batch_session_id = db_service.create_chat_session(files[0]["file_name"])
+
     processed_count = 0
     last_session_id = None
     last_file_name = None
@@ -364,28 +362,34 @@ def process_pending_upload(rag: RAGService | None):
 
     try:
         for file_payload in files:
+            # Decide target session for this file.
+            if batch_session_id is not None:
+                session_id = batch_session_id
+            else:
+                session_id = db_service.create_chat_session(file_payload["file_name"])
+
             saved_path = save_uploaded_bytes(file_payload["file_name"], file_payload["file_bytes"])
             document_id = None
             try:
                 document_id = db_service.create_document(file_payload["file_name"], saved_path)
-                result = rag.add_documents(saved_path, document_id=document_id)
+                result = rag.add_documents(saved_path, document_id=document_id, session_id=session_id)
                 if result["status"] != "success":
                     raise RuntimeError(result["message"])
 
                 db_service.replace_document_chunks(document_id, result.get("chunks", []))
 
-                if attach_to_existing_session and target_session is not None:
-                    session_id = target_session["id"]
-                    db_service.attach_document_to_session(
-                        session_id,
-                        document_id,
-                        title=file_payload["file_name"],
-                    )
-                else:
-                    session_id = db_service.create_chat_session(
-                        file_payload["file_name"],
-                        document_id=document_id,
-                    )
+                # If this is the first document of the session, use filename as session title.
+                session_before_attach = db_service.get_chat_session(session_id)
+                had_docs_before = session_has_documents(session_before_attach)
+                db_service.attach_document_to_session(
+                    session_id,
+                    document_id,
+                    title=file_payload["file_name"] if not had_docs_before else None,
+                )
+
+                # Graph status cache is per session/document, invalidate after new upload.
+                st.session_state.pop(f"graph_session_ready_{session_id}", None)
+                st.session_state.pop(f"graph_indexed_{session_id}_{document_id}", None)
 
                 st.session_state.latest_sources_by_session[session_id] = []
                 last_session_id = session_id
@@ -402,6 +406,7 @@ def process_pending_upload(rag: RAGService | None):
         st.session_state.draft_session = False
         st.session_state.active_session_id = last_session_id
         st.session_state.open_session_menu_id = None
+
         if processed_count == 1 and last_session_id is not None and last_file_name:
             st.session_state.last_upload_success = {
                 "session_id": last_session_id,
@@ -412,22 +417,32 @@ def process_pending_upload(rag: RAGService | None):
         elif processed_count > 1:
             st.session_state.last_upload_success = None
             st.session_state.last_graph_success = None
-            st.session_state.flash_message = {
-                "type": "success",
-                "text": f"Đã xử lý {processed_count} tài liệu và tạo đoạn chat riêng cho từng tài liệu.",
-            }
+            if append_to_existing_session:
+                st.session_state.flash_message = {
+                    "type": "success",
+                    "text": f"Đã bổ sung {processed_count} tài liệu vào đoạn chat hiện tại.",
+                }
+            else:
+                st.session_state.flash_message = {
+                    "type": "success",
+                    "text": f"Đã xử lý {processed_count} tài liệu và tạo đoạn chat riêng cho từng tài liệu.",
+                }
+
         st.session_state.uploader_nonce += 1
         st.session_state.processing_upload = None
         st.rerun()
     except Exception as exc:
         LOG.error("Upload flow failed: %s", exc)
+        if create_single_session_for_batch and batch_session_id is not None and processed_count == 0:
+            db_service.delete_chat_session(batch_session_id)
         st.session_state.processing_upload = None
         st.session_state.flash_message = {"type": "error", "text": f"Lỗi xử lý file: {exc}"}
         st.rerun()
 
 
 def queue_query(prompt: str, active_session: dict | None, rerun: bool = True):
-    if active_session is None or active_session.get("document_id") is None:
+    document_ids = get_session_document_ids(active_session)
+    if active_session is None or not document_ids:
         st.session_state.flash_message = {
             "type": "warning",
             "text": "Hãy upload tài liệu vào đoạn chat này trước khi đặt câu hỏi.",
@@ -438,7 +453,8 @@ def queue_query(prompt: str, active_session: dict | None, rerun: bool = True):
 
     st.session_state.queued_query = {
         "session_id": active_session["id"],
-        "document_id": active_session["document_id"],
+        "document_id": active_session.get("document_id"),
+        "document_ids": document_ids,
         "prompt": prompt,
         "rag_mode": RAG_MODE_BY_LABEL.get(st.session_state.current_rag_mode_label, "rag"),
         "search_type": "vector" if st.session_state.current_search_label == "Ngữ nghĩa" else "hybrid",
@@ -488,6 +504,8 @@ def process_pending_query(rag: RAGService | None):
         rag_mode=payload.get("rag_mode"),
         search_type=payload["search_type"],
         document_id=payload["document_id"],
+        document_ids=payload.get("document_ids"),
+        session_id=payload.get("session_id"),
         detail_level=payload["detail_level"],
     )
     db_service.add_chat_history(
@@ -534,28 +552,31 @@ def process_pending_graph_build(placeholder=None):
         st.rerun()
         return
 
-    file_path = payload.get("file_path")
+    session_id = payload.get("session_id")
+    documents = payload.get("documents") or []
+    doc_ids = payload.get("doc_ids") or []
     label = payload.get("label", "Xử lý đồ thị")
     loading_text = payload.get("loading_text", f"Đang {label.lower()}...")
 
     try:
-        if file_path and os.path.exists(file_path):
+        if documents:
             if placeholder:
                 with placeholder.container():
                     with st.spinner(loading_text):
-                        graph_service.update_graph_with_file(file_path)
+                        graph_service.update_graph_with_documents(documents)
             else:
                 with st.spinner(loading_text):
-                    graph_service.update_graph_with_file(file_path)
+                    graph_service.update_graph_with_documents(documents)
 
-            st.session_state[payload["cache_key"]] = True
-            st.session_state["graph_ready"] = True
-            
-            clean_label = label.replace("🔄 ", "").replace("🏗️ ", "")
+            if session_id is not None:
+                for doc_id in doc_ids:
+                    st.session_state[f"graph_indexed_{session_id}_{doc_id}"] = True
+             
+            clean_label = label
             st.session_state.last_graph_success = f"Đã {clean_label.lower()} thành công!"
-            
+             
         else:
-            st.session_state.flash_message = {"type": "error", "text": "Không tìm thấy đường dẫn file tài liệu."}
+            st.session_state.flash_message = {"type": "error", "text": "Không tìm thấy dữ liệu tài liệu để xây đồ thị."}
     except Exception as exc:
         LOG.error("Graph build failed: %s", exc)
         st.session_state.flash_message = {"type": "error", "text": f"Lỗi xử lý đồ thị: {exc}"}
@@ -740,16 +761,12 @@ def render_upload_stage(rag: RAGService | None, active_session: dict | None):
 
         st.markdown(
             """
-            <div class="upload-card upload-card-compact">
-                <div class="upload-card-icon">&uarr;</div>
-                <div class="upload-card-title">Kéo thả tài liệu vào đây</div>
-                <div class="upload-card-subtitle">Chọn một hoặc nhiều file PDF, DOCX để tạo chat riêng cho từng tài liệu</div>
-            </div>
+           
             """,
             unsafe_allow_html=True,
         )
         uploaded_files = st.file_uploader(
-            "PDF ho?c DOCX",
+            "PDF hoặc DOCX",
             type=["pdf", "docx"],
             accept_multiple_files=True,
             key=f"document_uploader_{st.session_state.uploader_nonce}",
@@ -759,7 +776,7 @@ def render_upload_stage(rag: RAGService | None, active_session: dict | None):
         render_selected_files(uploaded_files)
         selected_files = normalize_uploaded_files(uploaded_files)
         if st.button(
-            "Xử lý tài liệu" if len(selected_files) <= 1 else f"X? l? {len(selected_files)} t?i li?u",
+            "Xử lý tài liệu" if len(selected_files) <= 1 else f"Xử lý {len(selected_files)} tài liệu",
             use_container_width=True,
             type="primary",
             disabled=len(selected_files) == 0 or rag is None or is_busy(),
@@ -985,26 +1002,63 @@ def render_sources(active_session_id: int | None):
 
 
 def render_document_pill(active_session: dict | None):
-    if not active_session or not active_session.get("document_name"):
+    if not active_session:
         return
+    documents = active_session.get("documents") or []
+    if not documents:
+        return
+
+    doc_names = [str(doc.get("filename", "")).strip() for doc in documents if doc.get("filename")]
+    if not doc_names:
+        return
+
+    if len(doc_names) <= 3:
+        display_name = " | ".join(doc_names)
+    else:
+        display_name = " | ".join(doc_names[:3]) + f" | ... (+{len(doc_names) - 3})"
 
     st.markdown(
         f"""
         <div class="document-pill">
             <span class="document-pill-label">Tài liệu</span>
-            <span class="document-pill-name">{active_session["document_name"]}</span>
+            <span class="document-pill-name">{display_name}</span>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 
+def render_inline_upload_for_session(rag: RAGService | None, active_session: dict | None):
+    if active_session is None:
+        return
+
+    with st.expander("Bổ sung tài liệu vào đoạn chat này", expanded=False):
+        uploaded_files = st.file_uploader(
+            "Bổ sung PDF hoặc DOCX",
+            type=["pdf", "docx"],
+            accept_multiple_files=True,
+            key=f"inline_document_uploader_{active_session['id']}_{st.session_state.uploader_nonce}",
+            label_visibility="collapsed",
+            disabled=is_busy(),
+        )
+        selected_files = normalize_uploaded_files(uploaded_files)
+        if st.button(
+            "Bổ sung tài liệu",
+            key=f"inline_upload_btn_{active_session['id']}",
+            use_container_width=True,
+            type="secondary",
+            disabled=len(selected_files) == 0 or rag is None or is_busy(),
+        ):
+            queue_document_upload(rag, selected_files, active_session)
+
+
 def render_composer(active_session: dict | None):
     processing = st.session_state.get("processing_upload") or st.session_state.get("processing_query")
-    disabled = is_busy() or active_session is None or active_session.get("document_id") is None
+    has_docs = session_has_documents(active_session)
+    disabled = is_busy() or active_session is None or not has_docs
     prompt_placeholder = (
         "Nhập câu hỏi về tài liệu..."
-        if active_session is not None and active_session.get("document_id") is not None
+        if active_session is not None and has_docs
         else "Tải tài liệu lên để bắt đầu trò chuyện"
     )
     send_label = "■" if processing else "→"
@@ -1055,26 +1109,20 @@ def render_composer(active_session: dict | None):
         with composer_cols[3]:
             is_graphrag_mode = st.session_state.current_rag_mode_label == "GraphRAG"
             show_build_button = False
-            g_ready = st.session_state.get("graph_ready", False)
-            
-            if is_graphrag_mode and active_session and active_session.get("document_id"):
-                graph_service = st.session_state.get("_graph_svc_instance")
+            missing_doc_ids: list[int] = []
 
+            if is_graphrag_mode and active_session and has_docs:
+                graph_service = st.session_state.get("_graph_svc_instance")
                 if graph_service:
                     try:
-                        doc_id = active_session["document_id"]
-                        
-                        if "graph_ready" not in st.session_state:
-                            st.session_state["graph_ready"] = graph_service.is_graph_ready()
-                        g_ready = st.session_state["graph_ready"]
-
-                        cache_key = f"graph_indexed_{doc_id}"
-                        if cache_key not in st.session_state:
-                            st.session_state[cache_key] = graph_service.is_document_indexed(doc_id)
-                        is_indexed = st.session_state[cache_key]
-                        
-                        if not is_indexed:
-                            show_build_button = True
+                        session_id = active_session["id"]
+                        for doc_id in get_session_document_ids(active_session):
+                            cache_key = f"graph_indexed_{session_id}_{doc_id}"
+                            if cache_key not in st.session_state:
+                                st.session_state[cache_key] = graph_service.is_document_indexed(doc_id)
+                            if not st.session_state[cache_key]:
+                                missing_doc_ids.append(doc_id)
+                        show_build_button = len(missing_doc_ids) > 0
                     except Exception as e:
                         LOG.error(f"Lỗi kiểm tra trạng thái Graph: {e}")
 
@@ -1082,20 +1130,24 @@ def render_composer(active_session: dict | None):
             
             if show_build_button:
                 if not is_processing:
-                    label = "🔄 Cập nhật đồ thị tri thức" if g_ready else "🏗️ Xây dựng đồ thị tri thức"
-                    loading_text = "⏳ Đang cập nhật đồ thị tri thức..." if g_ready else "⏳ Đang xây dựng đồ thị tri thức..."
+                    all_doc_ids = get_session_document_ids(active_session)
+                    is_first_build = len(missing_doc_ids) == len(all_doc_ids)
+                    label = "Xây dựng đồ thị tri thức" if is_first_build else "Cập nhật đồ thị tri thức"
+                    loading_text = "Đang xây dựng đồ thị tri thức..." if is_first_build else "Đang cập nhật đồ thị tri thức..."
                     
                     if st.button(label, type="primary", use_container_width=True, disabled=disabled):
+                        docs_by_id = {int(doc["id"]): doc for doc in (active_session.get("documents") or []) if doc.get("id") is not None}
+                        target_docs = [docs_by_id[doc_id] for doc_id in missing_doc_ids if doc_id in docs_by_id]
                         st.session_state.processing_graph = {
-                            "doc_id": active_session["document_id"],
-                            "cache_key": f"graph_indexed_{active_session['document_id']}",
-                            "file_path": active_session.get("document_path"),
+                            "session_id": active_session["id"],
+                            "doc_ids": missing_doc_ids,
+                            "documents": target_docs,
                             "label": label,
                             "loading_text": loading_text
                         }
                         st.rerun()
                 else:
-                    st.button("⏳ Đang xử lý...", type="primary", use_container_width=True, disabled=True)
+                    st.button("Đang xử lý...", type="primary", use_container_width=True, disabled=True)
             else:
                 st.text_input(
                     "Nhập câu hỏi",
@@ -1122,7 +1174,7 @@ def render_composer(active_session: dict | None):
 def render_main_area(rag: RAGService | None, active_session: dict | None):
     graph_action_ph = st.empty()
 
-    if active_session is None or active_session.get("document_id") is None:
+    if active_session is None or not session_has_documents(active_session):
         with st.container():
             st.markdown('<div id="landing-stage-flag"></div>', unsafe_allow_html=True)
             graph_action_ph = st.empty() 
@@ -1134,6 +1186,7 @@ def render_main_area(rag: RAGService | None, active_session: dict | None):
             st.markdown('<div id="chat-stage-flag"></div>', unsafe_allow_html=True)
             
             render_document_pill(active_session)
+            render_inline_upload_for_session(rag, active_session)
             render_success_card(active_session)
             
             render_chat_history(active_session)
@@ -1230,3 +1283,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
