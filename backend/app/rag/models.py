@@ -11,6 +11,7 @@ class RAGQueryRequest:
     top_k: int
     document_id: int | None = None
     llm_model: str | None = None
+    stream: bool = False
 
 
 @dataclass
@@ -18,3 +19,4 @@ class RAGEngineResult:
     answer: str
     source_documents: List[Document] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    answer_generator: Any = None

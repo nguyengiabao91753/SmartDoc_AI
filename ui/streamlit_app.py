@@ -1,4 +1,4 @@
-﻿import os
+import os
 import re
 import sys
 from datetime import datetime
@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
 
 from app.core.config import settings
 from app.core.logger import LOG
+from app.database.sqlite_db import init_db
 from app.rag.registry import AVAILABLE_RAG_MODES, MODE_LABELS, normalize_rag_mode
 from app.services.database_service import db_service
 from app.services.rag_service import RAGService
@@ -48,6 +49,17 @@ def ensure_rag_service():
         return None
 
 
+# Tắt spinner mặc định để tự hiển thị bên dưới đáy màn hình
+@st.cache_resource(show_spinner=False)
+def get_graph_rag_service():
+    from app.services.graph_rag_service import GraphRAGService
+
+    # Tái sử dụng EmbeddingService từ RAGService để tiết kiệm RAM và thời gian khởi tạo
+    rag_svc = get_rag_service()
+    embedding_svc = rag_svc.embedding_service if rag_svc else None
+    return GraphRAGService(embedding_service=embedding_svc)
+
+
 def init_state():
     defaults = {
         "active_session_id": None,
@@ -61,6 +73,7 @@ def init_state():
         "queued_query": None,
         "processing_query": None,
         "last_upload_success": None,
+        "last_graph_success": None,
         "current_rag_mode_label": DEFAULT_RAG_MODE_LABEL,
         "current_search_label": "Ngữ nghĩa",
         "current_detail_label": "Nhanh",
@@ -69,6 +82,11 @@ def init_state():
         "scroll_to_bottom_nonce": 0,
         "scroll_applied_nonce": 0,
         "corag_metadata_by_session": {},
+        "processing_graph": None,
+        "initializing_graph": False,
+        "_do_graph_load": False, 
+        "_graph_just_initialized": False,
+        "_graph_init_failed": False,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -103,29 +121,36 @@ def apply_scheduled_bottom_scroll():
 
 
 def is_busy() -> bool:
+    is_loading_graph = st.session_state.get("current_rag_mode_label") == "GraphRAG" and st.session_state.get("_graph_svc_instance") is None
+    
     return any(
         [
             st.session_state.get("queued_upload"),
             st.session_state.get("processing_upload"),
             st.session_state.get("queued_query"),
             st.session_state.get("processing_query"),
+            st.session_state.get("processing_graph"),
+            st.session_state.get("initializing_graph"),
+            st.session_state.get("_do_graph_load"), 
+            is_loading_graph, 
         ]
     )
 
 
-def show_flash_message():
+def show_flash_message(container=None):
     flash = st.session_state.get("flash_message")
     if not flash:
         return
 
+    target = container if container else st
     kind = flash.get("type", "error")
     text = flash.get("text", "")
     if kind == "success":
-        st.success(text)
+        target.success(text)
     elif kind == "warning":
-        st.warning(text)
+        target.warning(text)
     else:
-        st.error(text)
+        target.error(text)
     st.session_state.flash_message = None
 
 
@@ -148,14 +173,21 @@ def ensure_active_session():
         st.session_state.draft_session = True
         return sessions
 
+    # NẾU NGƯỜI DÙNG ĐANG YÊU CẦU DRAFT (VÍ DỤ VỪA XÓA CHAT HOẶC BẤM NEW CHAT)
     if st.session_state.get("draft_session"):
         st.session_state.active_session_id = None
         return sessions
 
-    if st.session_state.active_session_id is None or not any(
-        session["id"] == st.session_state.active_session_id for session in sessions
-    ):
-        st.session_state.active_session_id = sessions[0]["id"]
+    # NẾU ACTIVE_SESSION_ID BỊ NONE (DO VỪA XÓA), CHUYỂN VỀ DRAFT LUÔN
+    if st.session_state.active_session_id is None:
+        st.session_state.draft_session = True
+        return sessions
+
+    # NẾU ĐANG CÓ ID MÀ ID ĐÓ KHÔNG TỒN TẠI NỮA
+    if not any(session["id"] == st.session_state.active_session_id for session in sessions):
+        st.session_state.draft_session = True
+        st.session_state.active_session_id = None
+
     return sessions
 
 
@@ -172,6 +204,7 @@ def create_new_chat():
     st.session_state.active_session_id = None
     st.session_state.draft_session = True
     st.session_state.last_upload_success = None
+    st.session_state.last_graph_success = None
     st.session_state.composer_prompt = ""
     st.session_state.editing_session_id = None
     st.session_state.open_session_menu_id = None
@@ -184,9 +217,9 @@ def set_active_session(session_id: int):
     st.session_state.active_session_id = session_id
     st.session_state.editing_session_id = None
     st.session_state.last_upload_success = None
+    st.session_state.last_graph_success = None
     st.session_state.composer_prompt = ""
     st.session_state.open_session_menu_id = None
-    st.rerun()
 
 
 def begin_session_rename(session_id: int, current_title: str):
@@ -195,7 +228,6 @@ def begin_session_rename(session_id: int, current_title: str):
     st.session_state.editing_session_id = session_id
     st.session_state[f"rename_input_{session_id}"] = current_title
     st.session_state.open_session_menu_id = None
-    st.rerun()
 
 
 def cancel_session_rename():
@@ -220,31 +252,37 @@ def remove_session(session_id: int):
     if is_busy():
         return
 
-    db_service.delete_chat_session(session_id)
-    st.session_state.latest_sources_by_session.pop(session_id, None)
+    # 1. Lấy thông tin đoạn chat hiện tại
+    target_session = db_service.get_chat_session(session_id)
 
-    if st.session_state.get("editing_session_id") == session_id:
-        st.session_state.editing_session_id = None
-    if st.session_state.get("open_session_menu_id") == session_id:
-        st.session_state.open_session_menu_id = None
+    # 2. Xóa tận gốc: Nếu chat này có tài liệu, xóa TẤT CẢ các chat dùng chung tài liệu này
+    if target_session and target_session.get("document_id"):
+        doc_id = target_session["document_id"]
+        all_sessions = db_service.get_chat_sessions()
 
-    queued_query = st.session_state.get("queued_query")
-    if queued_query and queued_query.get("session_id") == session_id:
-        st.session_state.queued_query = None
+        for s in all_sessions:
+            if s.get("document_id") == doc_id:
+                db_service.delete_chat_session(s["id"])
+                st.session_state.latest_sources_by_session.pop(s["id"], None)
+    else:
+        # Nếu là chat trống (chưa up tài liệu), chỉ xóa chính nó
+        db_service.delete_chat_session(session_id)
+        st.session_state.latest_sources_by_session.pop(session_id, None)
 
-    processing_query = st.session_state.get("processing_query")
-    if processing_query and processing_query.get("session_id") == session_id:
-        st.session_state.processing_query = None
+    # 3. Dọn dẹp trạng thái UI
+    st.session_state.editing_session_id = None
+    st.session_state.open_session_menu_id = None
+    st.session_state.queued_query = None
+    st.session_state.processing_query = None
 
-    if st.session_state.get("active_session_id") == session_id:
-        st.session_state.active_session_id = None
-        st.session_state.last_upload_success = None
-        st.session_state.composer_prompt = ""
-        st.session_state.draft_session = False
+    # 4. Bắt buộc quay về màn hình chính (màn hình Upload)
+    st.session_state.active_session_id = None
+    st.session_state.last_upload_success = None
+    st.session_state.last_graph_success = None
+    st.session_state.composer_prompt = ""
+    st.session_state.draft_session = True
 
-    st.session_state.flash_message = {"type": "success", "text": "Đã xóa đoạn chat."}
-    st.rerun()
-
+    st.session_state.flash_message = {"type": "success", "text": "Đã xóa đoạn chat khỏi lịch sử!"}
 
 def sanitize_filename(filename: str) -> str:
     stem = Path(filename).stem
@@ -302,6 +340,7 @@ def queue_document_upload(rag: RAGService | None, uploaded_files, active_session
         "display_name": files[0].name if len(files) == 1 else f"{len(files)} tài liệu",
     }
     st.session_state.last_upload_success = None
+    st.session_state.last_graph_success = None
     st.rerun()
 
 
@@ -369,8 +408,10 @@ def process_pending_upload(rag: RAGService | None):
                 "file_name": last_file_name,
                 "message": last_message,
             }
+            st.session_state.last_graph_success = None
         elif processed_count > 1:
             st.session_state.last_upload_success = None
+            st.session_state.last_graph_success = None
             st.session_state.flash_message = {
                 "type": "success",
                 "text": f"Đã xử lý {processed_count} tài liệu và tạo đoạn chat riêng cho từng tài liệu.",
@@ -405,17 +446,31 @@ def queue_query(prompt: str, active_session: dict | None, rerun: bool = True):
     }
     st.session_state.latest_sources_by_session[active_session["id"]] = []
     st.session_state.last_upload_success = None
+    
+    # Bấm gửi câu hỏi là ẩn luôn thông báo đồ thị thành công
+    st.session_state.last_graph_success = None
+    
     schedule_bottom_scroll()
     if rerun:
         st.rerun()
 
 
 def submit_query_from_state(active_session: dict | None):
+    if is_busy():
+        return
     prompt = st.session_state.get("composer_prompt", "").strip()
     if not prompt:
         return
     st.session_state.composer_prompt = ""
     queue_query(prompt, active_session, rerun=False)
+
+
+def on_rag_mode_change():
+    new_label = st.session_state.get("rag_mode_select")
+    st.session_state.current_rag_mode_label = new_label
+    if new_label == "GraphRAG":
+        st.session_state.initializing_graph = True
+        st.session_state._graph_init_failed = False
 
 
 def process_pending_query(rag: RAGService | None):
@@ -445,7 +500,6 @@ def process_pending_query(rag: RAGService | None):
     )
     st.session_state.latest_sources_by_session[payload["session_id"]] = result.get("sources", [])
 
-    # Lưu CoRAG metadata để hiển thị step-by-step
     session_id = payload["session_id"]
     if "corag_metadata_by_session" not in st.session_state:
         st.session_state.corag_metadata_by_session = {}
@@ -463,6 +517,49 @@ def process_pending_query(rag: RAGService | None):
 
     st.session_state.processing_query = None
     schedule_bottom_scroll()
+    st.rerun()
+
+
+def process_pending_graph_build(placeholder=None):
+    payload = st.session_state.get("processing_graph")
+    if not payload:
+        return
+
+    # LẬP TỨC CLEAR CỜ ĐỂ TRÁNH TREO STATE NẾU BỊ RELOAD GIỮA CHỪNG
+    st.session_state.processing_graph = None
+
+    graph_service = get_graph_rag_service()
+    if not graph_service:
+        st.session_state.flash_message = {"type": "error", "text": "GraphRAG service chưa sẵn sàng."}
+        st.rerun()
+        return
+
+    file_path = payload.get("file_path")
+    label = payload.get("label", "Xử lý đồ thị")
+    loading_text = payload.get("loading_text", f"Đang {label.lower()}...")
+
+    try:
+        if file_path and os.path.exists(file_path):
+            if placeholder:
+                with placeholder.container():
+                    with st.spinner(loading_text):
+                        graph_service.update_graph_with_file(file_path)
+            else:
+                with st.spinner(loading_text):
+                    graph_service.update_graph_with_file(file_path)
+
+            st.session_state[payload["cache_key"]] = True
+            st.session_state["graph_ready"] = True
+            
+            clean_label = label.replace("🔄 ", "").replace("🏗️ ", "")
+            st.session_state.last_graph_success = f"Đã {clean_label.lower()} thành công!"
+            
+        else:
+            st.session_state.flash_message = {"type": "error", "text": "Không tìm thấy đường dẫn file tài liệu."}
+    except Exception as exc:
+        LOG.error("Graph build failed: %s", exc)
+        st.session_state.flash_message = {"type": "error", "text": f"Lỗi xử lý đồ thị: {exc}"}
+    
     st.rerun()
 
 
@@ -519,14 +616,15 @@ def render_sidebar(sessions):
 
             row_cols = st.columns([6.1, 0.9], gap="small")
             with row_cols[0]:
-                if st.button(
+                st.button(
                     session["title"],
                     key=f"session_{session_id}",
                     use_container_width=True,
                     type="primary" if is_active else "secondary",
                     disabled=is_busy(),
-                ):
-                    set_active_session(session_id)
+                    on_click=set_active_session,
+                    args=(session_id,)
+                )
             with row_cols[1]:
                 st.button(
                     "⋯",
@@ -540,19 +638,21 @@ def render_sidebar(sessions):
             if is_menu_open and not is_busy():
                 menu_cols = st.columns([1, 1], gap="small")
                 with menu_cols[0]:
-                    if st.button(
+                    st.button(
                         "Đổi tên",
                         key=f"menu_rename_{session_id}",
                         use_container_width=True,
-                    ):
-                        begin_session_rename(session_id, session["title"])
+                        on_click=begin_session_rename,
+                        args=(session_id, session["title"])
+                    )
                 with menu_cols[1]:
-                    if st.button(
+                    st.button(
                         "Xóa",
                         key=f"menu_delete_{session_id}",
                         use_container_width=True,
-                    ):
-                        remove_session(session_id)
+                        on_click=remove_session,
+                        args=(session_id,)
+                    )
 
 def render_processing_card(file_name: str):
     st.markdown(
@@ -916,13 +1016,15 @@ def render_composer(active_session: dict | None):
 
         composer_cols = st.columns([1.55, 1.55, 1.3, 5.5, 0.85], gap="small")
         with composer_cols[0]:
-            st.session_state.current_rag_mode_label = st.selectbox(
+            st.selectbox(
                 "RAGMode",
                 options=RAG_MODE_OPTIONS,
                 label_visibility="collapsed",
                 disabled=disabled,
                 key="rag_mode_select",
+                on_change=on_rag_mode_change,
             )
+            st.session_state.current_rag_mode_label = st.session_state.get("rag_mode_select", DEFAULT_RAG_MODE_LABEL)
         with composer_cols[1]:
             st.session_state.current_search_label = st.selectbox(
                 "Mode",
@@ -949,48 +1051,124 @@ def render_composer(active_session: dict | None):
                     key="detail_mode_select_locked",
                 )
                 st.session_state.current_detail_label = "Nhanh"
+        
         with composer_cols[3]:
-            st.text_input(
-                "Nhập câu hỏi",
-                key="composer_prompt",
-                label_visibility="collapsed",
-                placeholder=prompt_placeholder,
-                disabled=disabled,
-                on_change=submit_query_from_state,
-                args=(active_session,),
-            )
+            is_graphrag_mode = st.session_state.current_rag_mode_label == "GraphRAG"
+            show_build_button = False
+            g_ready = st.session_state.get("graph_ready", False)
+            
+            if is_graphrag_mode and active_session and active_session.get("document_id"):
+                graph_service = st.session_state.get("_graph_svc_instance")
+
+                if graph_service:
+                    try:
+                        doc_id = active_session["document_id"]
+                        
+                        if "graph_ready" not in st.session_state:
+                            st.session_state["graph_ready"] = graph_service.is_graph_ready()
+                        g_ready = st.session_state["graph_ready"]
+
+                        cache_key = f"graph_indexed_{doc_id}"
+                        if cache_key not in st.session_state:
+                            st.session_state[cache_key] = graph_service.is_document_indexed(doc_id)
+                        is_indexed = st.session_state[cache_key]
+                        
+                        if not is_indexed:
+                            show_build_button = True
+                    except Exception as e:
+                        LOG.error(f"Lỗi kiểm tra trạng thái Graph: {e}")
+
+            is_processing = st.session_state.get("processing_graph")
+            
+            if show_build_button:
+                if not is_processing:
+                    label = "🔄 Cập nhật đồ thị tri thức" if g_ready else "🏗️ Xây dựng đồ thị tri thức"
+                    loading_text = "⏳ Đang cập nhật đồ thị tri thức..." if g_ready else "⏳ Đang xây dựng đồ thị tri thức..."
+                    
+                    if st.button(label, type="primary", use_container_width=True, disabled=disabled):
+                        st.session_state.processing_graph = {
+                            "doc_id": active_session["document_id"],
+                            "cache_key": f"graph_indexed_{active_session['document_id']}",
+                            "file_path": active_session.get("document_path"),
+                            "label": label,
+                            "loading_text": loading_text
+                        }
+                        st.rerun()
+                else:
+                    st.button("⏳ Đang xử lý...", type="primary", use_container_width=True, disabled=True)
+            else:
+                st.text_input(
+                    "Nhập câu hỏi",
+                    key="composer_prompt",
+                    label_visibility="collapsed",
+                    placeholder=prompt_placeholder,
+                    disabled=disabled,
+                    on_change=submit_query_from_state,
+                    args=(active_session,),
+                )
+
         with composer_cols[4]:
-            st.button(
-                send_label,
-                key="composer_send_btn",
-                use_container_width=True,
-                disabled=disabled,
-                on_click=submit_query_from_state,
-                args=(active_session,),
-            )
+            if not show_build_button:
+                st.button(
+                    send_label,
+                    key="composer_send_btn",
+                    use_container_width=True,
+                    disabled=disabled,
+                    on_click=submit_query_from_state,
+                    args=(active_session,),
+                )
 
 
 def render_main_area(rag: RAGService | None, active_session: dict | None):
-    show_flash_message()
+    graph_action_ph = st.empty()
 
     if active_session is None or active_session.get("document_id") is None:
         with st.container():
             st.markdown('<div id="landing-stage-flag"></div>', unsafe_allow_html=True)
+            graph_action_ph = st.empty() 
             render_landing_hero()
             render_upload_stage(rag, active_session)
             render_composer(active_session)
     else:
         with st.container():
             st.markdown('<div id="chat-stage-flag"></div>', unsafe_allow_html=True)
+            
             render_document_pill(active_session)
             render_success_card(active_session)
+            
             render_chat_history(active_session)
             render_sources(active_session["id"])
+
+            graph_action_ph = st.empty() 
+
+            # Hiện thẻ thông báo chuẩn màu xanh lá (dấu tick tròn) khi xây dựng/cập nhật xong
+            is_graphrag_mode = st.session_state.get("current_rag_mode_label") == "GraphRAG"
+            graph_success_msg = st.session_state.get("last_graph_success")
+
+            if is_graphrag_mode and graph_success_msg and not st.session_state.get("processing_graph"):
+                with graph_action_ph.container():
+                    st.markdown(
+                        f"""
+                        <div class="ready-card">
+                            <div class="ready-check">✓</div>
+                            <div>
+                                <div class="ready-title">{graph_success_msg}</div>
+                                <div class="ready-subtitle">Sẵn sàng để trả lời câu hỏi</div>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+            
             st.markdown('<div id="content-bottom-anchor"></div><div class="chat-safe-spacer"></div>', unsafe_allow_html=True)
+        
         render_composer(active_session)
+
+    return graph_action_ph
 
 
 def main():
+    init_db()  
     init_state()
     css = load_css_file()
     if css:
@@ -999,12 +1177,50 @@ def main():
     rag = ensure_rag_service()
     transition_pending_states()
 
+    # --- CLEAR FLAGS IF SERVICE EXISTS ---
+    if st.session_state.get("_graph_svc_instance") is not None:
+        st.session_state.initializing_graph = False
+        st.session_state._do_graph_load = False
+
+    if st.session_state.current_rag_mode_label == "GraphRAG" and st.session_state.get("_graph_svc_instance") is None:
+        if not st.session_state.get("initializing_graph") and not st.session_state.get("_do_graph_load") and not st.session_state.get("_graph_init_failed"):
+            st.session_state.initializing_graph = True
+            st.rerun()
+
     sessions = ensure_active_session()
     active_session = get_active_session(sessions)
 
+    top_placeholder = st.empty()
+    with top_placeholder.container():
+        show_flash_message()
+
     render_sidebar(sessions)
-    render_main_area(rag, active_session)
+    
+    graph_action_ph = render_main_area(rag, active_session)  
     apply_scheduled_bottom_scroll()
+
+    # TẢI SERVICE VÀ HIỂN THỊ SPINNER GIẢ LẬP ĐỊNH DẠNG INLINE CODE
+    is_loading_graph = st.session_state.current_rag_mode_label == "GraphRAG" and st.session_state.get("_graph_svc_instance") is None
+    if is_loading_graph:
+        with graph_action_ph.container():
+            with st.spinner("Running `get_graph_rag_service()` ."):
+                try:
+                    svc = get_graph_rag_service() 
+                    st.session_state._graph_svc_instance = svc
+                    
+                    # --- RESET FLAGS NGAY KHI INIT XONG ---
+                    st.session_state.initializing_graph = False
+                    st.session_state._do_graph_load = False
+                except Exception as exc:
+                    LOG.error("GraphRAG init failed: %s", exc)
+                    st.session_state._graph_svc_instance = None
+                    st.session_state.initializing_graph = False
+                    st.session_state._do_graph_load = False
+                    st.session_state.flash_message = {"type": "error", "text": f"Lỗi khởi tạo: {exc}"}
+        st.rerun()
+
+    if st.session_state.get("processing_graph"):
+        process_pending_graph_build(graph_action_ph)
 
     if st.session_state.get("processing_upload"):
         process_pending_upload(rag)

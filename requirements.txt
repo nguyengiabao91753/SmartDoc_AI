@@ -73,4 +73,16 @@ underthesea
 httpx
  
 # OCR (optional - loaded with try/except, requires Tesseract binary installed separately)
-# pytesseract
+pytesseract
+
+# Build graph in a temporary memory 
+networkx
+
+# Detect communities with leiden algorithm
+graspologic
+
+# Graph database
+neo4j
+
+# Watch file changes
+watchdog

@@ -902,6 +902,7 @@ div[data-testid="stChatMessage"] pre * {
 }
 .thinking-row span:nth-child(3) {
   animation-delay: 0.32s;
+  background: #a5b4fc;
 }
 @keyframes thinking-bounce {
   0%,
@@ -1709,4 +1710,54 @@ div[data-testid="stVerticalBlock"]:has(#composer-anchor):not(
   to {
     transform: rotate(360deg);
   }
+}
+
+#graphrag-build-flag { display:block; height:0; }
+
+div[data-testid="stVerticalBlock"]:has(#graphrag-build-flag):not(:has(div[data-testid="stVerticalBlock"] #graphrag-build-flag))
+  [data-testid="stButton"] > button[kind="primary"]{
+  background:#007BFF !important;
+  color: #fff !important;
+  border: 0 !important;
+  font-weight: 800 !important;
+  padding: 0.85rem 1rem !important;
+  border-radius: 14px !important;
+}
+
+/* Làm cho khung trạng thái nổi bật hơn */
+.stStatus {
+    border: 1px solid #4A90E2 !important;
+    background-color: #f0f7ff !important;
+    border-radius: 10px !important;
+}
+
+/* Hiệu ứng nhấp nháy nhẹ cho text đang xử lý */
+.stStatus div[data-testid="stMarkdownContainer"] {
+    font-size: 0.9rem;
+    color: #333;
+}
+
+/* Move Streamlit cache spinner to top right */
+[data-testid="stToastContainer"],
+div[data-testid="stStatusWidget"] {
+    position: fixed !important;
+    top: 2rem !important;
+    right: 2rem !important;
+    bottom: auto !important;
+    left: auto !important;
+    z-index: 999999 !important;
+}
+
+/* Sửa lỗi vòng tròn loading của st.cache_resource bị che/lẹm ở đầu trang */
+div[data-testid="stSpinner"] {
+    z-index: 999999 !important;
+    margin-top: 25px !important;
+    position: relative !important;
+}
+
+/* Ngăn Streamlit làm mờ giao diện khi đang loading */
+[data-testid="stAppViewContainer"] {
+    opacity: 1 !important;
+    filter: none !important;
+    transition: none !important;
 }
