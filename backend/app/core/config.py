@@ -7,9 +7,9 @@ ROOT = Path(__file__).resolve().parents[3]  # smartdoc-ai/backend/app/..
 class Settings(BaseSettings):
     # Ollama / LLM
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen2.5:1.5b")
-    LLM_NUM_CTX: int = int(os.getenv("LLM_NUM_CTX", 2048))
-    LLM_NUM_PREDICT: int = int(os.getenv("LLM_NUM_PREDICT", 512))
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen3.5:2b")
+    LLM_NUM_CTX: int = int(os.getenv("LLM_NUM_CTX", 1024))
+    LLM_NUM_PREDICT: int = int(os.getenv("LLM_NUM_PREDICT", 256))
     LLM_NUM_BATCH: int = int(os.getenv("LLM_NUM_BATCH", 512))
     LLM_KEEP_ALIVE: str = os.getenv("LLM_KEEP_ALIVE", "5m")
 
@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     NEO4J_URI: str = str(os.getenv("NEO4J_URI"))
     NEO4J_USERNAME: str = str(os.getenv("NEO4J_USERNAME"))
     NEO4J_PASSWORD: str = str(os.getenv("NEO4J_PASSWORD"))
-
+    NEO4J_DATABASE: str = str(os.getenv("NEO4J_DATABASE"))
 
     model_config = SettingsConfigDict(
         env_file=(str(ROOT / ".env"), str(ROOT / "backend" / ".env"))

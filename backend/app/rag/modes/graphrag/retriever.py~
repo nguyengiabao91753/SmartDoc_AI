@@ -24,25 +24,27 @@ class GraphRAGRetriever:
         self.router_llm = get_llm(temperature=0)
 
     def _route_query(self, query: str) -> str:
-        """Dùng Prompt để LLM chọn chiến lược và xử lý kết quả trả về."""
+        """Dùng Prompt để LLM quyết định xem nên dùng Local hay Global Search."""
+        # ĐÃ SỬA: Sử dụng Prompt để ép kiểu kết quả thay vì dùng tính năng Schema của LangChain
         prompt = (
-            "Bạn là một trợ lý định tuyến câu hỏi. Chỉ được phép trả lời duy nhất một từ 'LOCAL' hoặc 'GLOBAL'.\n"
-            "- Chọn 'LOCAL' nếu hỏi chi tiết về thực thể hoặc sự kiện cụ thể.\n"
-            "- Chọn 'GLOBAL' nếu hỏi bao quát hoặc tóm tắt nội dung.\n"
+            "Bạn là một trợ lý định tuyến câu hỏi. Nhiệm vụ của bạn là chọn chiến lược tìm kiếm phù hợp.\n"
+            "Chỉ được phép trả lời duy nhất một từ là 'LOCAL' hoặc 'GLOBAL'.\n"
+            "- Chọn 'LOCAL' nếu câu hỏi yêu cầu chi tiết về thực thể, quan hệ hoặc sự kiện cụ thể.\n"
+            "- Chọn 'GLOBAL' nếu câu hỏi yêu cầu tóm tắt, tổng quan hoặc ý chính của tài liệu.\n\n"
             f"Câu hỏi: {query}\n"
-            "Trả lời:"
+            "Chiến lược được chọn:"
         )
         try:
-            # Sử dụng invoke bình thường để lấy kết quả văn bản
+            # ĐÃ SỬA: Xử lý kết quả dạng chuỗi từ LLM
             response = self.router_llm.invoke(prompt)
-            result = response.content.strip().upper()
+            content = response.content.strip().upper()
             
-            if "GLOBAL" in result:
+            if "GLOBAL" in content:
                 return "GLOBAL"
             return "LOCAL"
         except Exception as e:
             LOG.error(f"[GraphRAGRetriever] Lỗi Router, fallback về LOCAL: {e}")
-            return "LOCAL"
+            return "LOCAL" # Mặc định an toàn nếu lỗi
 
     def retrieve(self, query: str, top_k: int = 5) -> Dict[str, Any]:
         LOG.info(f"[GraphRAGRetriever] Đang xử lý câu hỏi: '{query}'")

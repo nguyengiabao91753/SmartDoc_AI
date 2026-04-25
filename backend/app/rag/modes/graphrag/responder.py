@@ -1,113 +1,51 @@
-from __future__ import annotations
+import logging
+from typing import Dict, Any
+from langchain_core.prompts import PromptTemplate
+from app.ai.llm import get_llm 
 
-from typing import List
-
-from langchain_core.documents import Document
-
-from app.ai.llm import get_llm
-
+LOG = logging.getLogger(__name__)
 
 class GraphRAGResponder:
-    """Answer synthesizer for GraphRAG with strategy-aware prompting."""
+    """
+    Responder tiếp nhận Context đã được lọc từ Retriever và sinh ra câu trả lời.
+    """
+    def __init__(self):
+        self.llm = get_llm(temperature=0.2)
+        
+        self.prompt_template = PromptTemplate(
+            template="""Bạn là một chuyên gia phân tích dữ liệu AI.
+Hệ thống đã tự động chọn lọc và cung cấp cho bạn một ngữ cảnh dạng {context_type}. 
+Hãy sử dụng ngữ cảnh này để trả lời câu hỏi của người dùng một cách chính xác nhất.
 
-    def answer(
-        self,
-        *,
-        question: str,
-        source_documents: List[Document],
-        llm_model: str | None = None,
-        strategy: str = "local",
-    ) -> str:
-        if not source_documents:
-            return "Khong tim thay thong tin lien quan trong do thi tri thuc de tra loi cau hoi nay."
+--- NGỮ CẢNH CUNG CẤP ---
+{context}
 
-        prompt = self._build_prompt(question=question, source_documents=source_documents, strategy=strategy)
-        llm = get_llm(model=llm_model, temperature=0.0)
-        return llm.invoke(prompt)
+--- HƯỚNG DẪN ---
+1. Chỉ dựa vào ngữ cảnh được cung cấp. Nếu ngữ cảnh không có thông tin, hãy nói "Tôi không tìm thấy dữ liệu về vấn đề này".
+2. Trả lời rõ ràng, súc tích, đi thẳng vào trọng tâm câu hỏi.
 
-    def stream_answer(
-        self,
-        *,
-        question: str,
-        source_documents: List[Document],
-        llm_model: str | None = None,
-        strategy: str = "local",
-    ):
-        if not source_documents:
-            yield "Khong tim thay thong tin lien quan trong do thi tri thuc de tra loi cau hoi nay."
-            return
-
-        prompt = self._build_prompt(question=question, source_documents=source_documents, strategy=strategy)
-        llm = get_llm(model=llm_model, temperature=0.0)
-        for chunk in llm.stream(prompt):
-            yield chunk
-
-    def _build_prompt(self, *, question: str, source_documents: List[Document], strategy: str) -> str:
-        if strategy == "global":
-            return self._build_global_prompt(question=question, source_documents=source_documents)
-        return self._build_local_prompt(question=question, source_documents=source_documents)
-
-    def _build_global_prompt(self, *, question: str, source_documents: List[Document]) -> str:
-        text_sections = []
-        community_sections = []
-
-        for idx, doc in enumerate(source_documents, start=1):
-            source_type = str(doc.metadata.get("source_type", "community"))
-            if source_type.startswith("text"):
-                text_sections.append(f"[Text {idx}]\n{doc.page_content}")
-            else:
-                community_id = doc.metadata.get("community_id", idx)
-                community_sections.append(f"[Bao cao {community_id}]\n{doc.page_content}")
-
-        text_context = "\n\n".join(text_sections) if text_sections else "(Khong co)"
-        community_context = "\n\n".join(community_sections) if community_sections else "(Khong co)"
-
-        return (
-            "Ban la tro ly tong hop cho GraphRAG.\n"
-            "Nhiem vu: Tra loi cau hoi tong quan ve tai lieu.\n\n"
-            "Quy tac bat buoc:\n"
-            "- Chi su dung thong tin trong NGU CANH.\n"
-            "- Uu tien muc TEXT EVIDENCE de xac dinh chu de tai lieu.\n"
-            "- Muc COMMUNITY REPORT chi dung de bo sung boi canh.\n"
-            "- Neu khong du thong tin thi noi ro: 'Khong du du lieu trong do thi'.\n"
-            "- Khi dua ra y chinh, ghi kem ma nguon [Text X] hoac [Bao cao X].\n"
-            "- Khong lap lai cau hoi.\n"
-            "- Tra loi cung ngon ngu voi cau hoi.\n\n"
-            f"TEXT EVIDENCE:\n{text_context}\n\n"
-            f"COMMUNITY REPORT:\n{community_context}\n\n"
-            f"CAU HOI:\n{question}\n\n"
-            "TRA LOI TONG HOP:"
+Câu hỏi của người dùng: {query}
+Câu trả lời:""",
+            input_variables=["context_type", "context", "query"]
         )
 
-    def _build_local_prompt(self, *, question: str, source_documents: List[Document]) -> str:
-        graph_facts = []
-        text_facts = []
-
-        for idx, doc in enumerate(source_documents, start=1):
-            source_type = str(doc.metadata.get("source_type", "graph"))
-            if source_type == "text":
-                text_facts.append(f"[Text {idx}] {doc.page_content}")
-            else:
-                graph_facts.append(f"[Graph {idx}] {doc.page_content}")
-
-        context_parts = []
-        if graph_facts:
-            context_parts.append("THONG TIN DO THI:\n" + "\n".join(graph_facts))
-        if text_facts:
-            context_parts.append("BANG CHUNG VAN BAN BO SUNG:\n" + "\n".join(text_facts))
-
-        context = "\n\n".join(context_parts)
-
-        return (
-            "Ban la tro ly hoi dap dua tren Knowledge Graph.\n"
-            "Nhiem vu: Ket noi cac quan he trong do thi de tra loi cau hoi.\n\n"
-            "Quy tac bat buoc:\n"
-            "- CHI su dung thong tin co trong NGU CANH.\n"
-            "- Neu khong du thong tin thi noi ro: 'Khong tim thay thong tin du de ket luan'.\n"
-            "- Neu co bang chung van ban bo sung, uu tien dung de lam ro ngu canh.\n"
-            "- Khong lap lai cau hoi.\n"
-            "- Tra loi ngan gon, logic, cung ngon ngu voi cau hoi.\n\n"
-            f"NGU CANH:\n{context}\n\n"
-            f"CAU HOI:\n{question}\n\n"
-            "TRA LOI CHI TIET:"
-        )
+    def generate_response(self, retrieved_data: Dict[str, Any]) -> str:
+        query = retrieved_data.get("query", "")
+        context = retrieved_data.get("context", "")
+        context_type = retrieved_data.get("context_type", "Dữ liệu đồ thị")
+        
+        LOG.info(f"[GraphRAGResponder] Đang sinh câu trả lời dựa trên chiến lược {retrieved_data.get('strategy')}...")
+        
+        try:
+            chain = self.prompt_template | self.llm
+            response = chain.invoke({
+                "context_type": context_type,
+                "context": context,
+                "query": query
+            })
+            
+            return response.content.strip() if hasattr(response, 'content') else str(response).strip()
+            
+        except Exception as e:
+            LOG.error(f"[GraphRAGResponder] Lỗi sinh câu trả lời: {e}")
+            return "Đã xảy ra lỗi trong quá trình tổng hợp dữ liệu để trả lời."

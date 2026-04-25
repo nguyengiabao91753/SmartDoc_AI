@@ -29,7 +29,12 @@ class RAGService:
         LOG.info("RAGService khoi tao xong")
 
     def _rebuild_engines(self):
-        self.engines = build_engine_registry(self.vectorstore, self.embedding_service)
+        try:
+            self.engines = build_engine_registry(self.vectorstore, self.embedding_service)
+        except Exception as exc:
+            import traceback
+            LOG.error("RAG init error chi tiet:\n%s", traceback.format_exc()) # Sẽ hiện lỗi đỏ lòm rất chi tiết
+            raise exc
 
     def _resolve_rag_mode(self, rag_mode: str | None = None) -> str:
         resolved = normalize_rag_mode(rag_mode)

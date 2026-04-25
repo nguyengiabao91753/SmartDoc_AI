@@ -66,23 +66,31 @@ scikit-learn
 nltk
 tiktoken
  
-# Vietnamese NLP (used in document_service.py for sent_tokenize)
-underthesea
- 
 # HTTP client (used in test_key.py)
 httpx
- 
-# OCR (optional - loaded with try/except, requires Tesseract binary installed separately)
-pytesseract
 
 # Build graph in a temporary memory 
 networkx
-
-# Detect communities with leiden algorithm
-graspologic==3.3.0
 
 # Graph database
 neo4j
 
 # Watch file changes
 watchdog
+
+# Community detection
+cdlib
+
+# Leiden clustering algorithm
+leidenalg
+
+# Core graph library
+igraph
+
+# LLM graph extraction
+langchain-experimental
+
+# Vietnamese NLP (used in document_service.py for sent_tokenize)
+underthesea
+
+json-repair
