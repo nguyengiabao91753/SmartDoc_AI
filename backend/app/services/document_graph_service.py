@@ -74,6 +74,7 @@ class DocumentGraphService:
                     target,
                     relation=rel.get("relation", ""),
                     description=rel.get("description", ""),
+                    confidence=float(rel.get("confidence", 0.0) or 0.0),
                     document_id=document_id,
                 )
 

@@ -128,6 +128,7 @@ class GraphRAGEngine(BaseRAGModeEngine):
                 "target": v,
                 "relation": data.get("relation", "RELATED"),
                 "description": data.get("description", ""),
+                "confidence": float(data.get("confidence", 0.0) or 0.0),
             })
 
         return graph_data

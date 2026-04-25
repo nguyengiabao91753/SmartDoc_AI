@@ -993,10 +993,48 @@ def render_sources(active_session_id: int | None):
         return
 
     st.markdown('<div class="sources-title">Nguồn liên quan</div>', unsafe_allow_html=True)
-    for index, source in enumerate(sources, start=1):
-        title = f"Nguồn {index} · {source['source']} · chunk {source['chunk']}"
+
+    def _is_graphrag_sources(items: list[dict]) -> bool:
+        for item in items:
+            source_type = str(item.get("source_type", "")).lower()
+            if source_type in {"graph", "community", "text_global", "text"}:
+                if source_type != "text":
+                    return True
+                # text source in GraphRAG usually has no chunk metadata
+                if item.get("community_id") is not None or item.get("relationship") is not None:
+                    return True
+        return False
+
+    is_graphrag = _is_graphrag_sources(sources)
+
+    def _build_source_title(index: int, source: dict) -> str:
+        source_type = str(source.get("source_type", "text")).lower()
+        source_name = str(source.get("source", "unknown"))
+        chunk = source.get("chunk", 0)
+
+        if is_graphrag:
+            if source_type == "community" and source.get("community_id") is not None:
+                return f"Nguồn {index} · Cộng đồng số {source.get('community_id')}"
+            if source_type == "graph":
+                graph_source = source.get("graph_source")
+                graph_target = source.get("graph_target")
+                relation = source.get("relationship")
+                if graph_source and graph_target and relation:
+                    return f"Nguồn {index} · Đồ thị: {graph_source} -[{relation}]- {graph_target}"
+                return f"Nguồn {index} · Bằng chứng đồ thị"
+            if source_type.startswith("text"):
+                if source_name and source_name != "unknown":
+                    return f"Nguồn {index} · Văn bản hỗ trợ · {source_name}"
+                return f"Nguồn {index} · Văn bản hỗ trợ"
+            return f"Nguồn {index} · Bằng chứng GraphRAG"
+
+        title = f"Nguồn {index} · {source_name} · chunk {chunk}"
         if source.get("page_start") is not None:
             title += f" · page {source['page_start']}"
+        return title
+
+    for index, source in enumerate(sources, start=1):
+        title = _build_source_title(index, source)
         with st.expander(title):
             st.write(source["content"])
 

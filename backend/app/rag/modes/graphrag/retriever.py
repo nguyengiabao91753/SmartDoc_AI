@@ -167,6 +167,7 @@ class GraphRAGRetriever:
                neighbor.name AS target,
                coalesce(neighbor.original_name, neighbor.name) AS target_display,
                coalesce(r.description, '') AS rel_description,
+               coalesce(r.confidence, 0.0) AS rel_confidence,
                coalesce(startNode.description, '') AS source_description,
                coalesce(neighbor.description, '') AS target_description,
                vector_score
@@ -203,6 +204,7 @@ class GraphRAGRetriever:
             source_display = str(row.get("source_display") or source).strip()
             target_display = str(row.get("target_display") or target).strip()
             rel_description = str(row.get("rel_description") or "").strip()
+            rel_confidence = float(row.get("rel_confidence", 0.0) or 0.0)
             source_description = str(row.get("source_description") or "").strip()
             target_description = str(row.get("target_description") or "").strip()
 
@@ -220,13 +222,14 @@ class GraphRAGRetriever:
                     ]
                 ),
             )
-            retrieval_score = (0.7 * semantic_score) + (0.3 * lexical_score)
+            retrieval_score = (0.6 * semantic_score) + (0.25 * lexical_score) + (0.15 * rel_confidence)
 
             context = self._build_graph_context(
                 source=source_display,
                 relationship=relationship,
                 target=target_display,
                 rel_description=rel_description,
+                relation_confidence=rel_confidence,
                 source_description=source_description,
                 target_description=target_description,
             )
@@ -238,6 +241,7 @@ class GraphRAGRetriever:
                 "relationship": relationship,
                 "semantic_score": semantic_score,
                 "lexical_score": lexical_score,
+                "relation_confidence": rel_confidence,
                 "retrieval_score": retrieval_score,
             }
             doc = Document(page_content=context, metadata=metadata)
@@ -263,16 +267,19 @@ class GraphRAGRetriever:
         relationship: str,
         target: str,
         rel_description: str,
+        relation_confidence: float,
         source_description: str,
         target_description: str,
     ) -> str:
-        parts = [f"Entity '{source}' has relation [{relationship}] with '{target}'."]
+        parts = [f"Thuc the '{source}' co quan he [{relationship}] voi '{target}'."]
         if rel_description:
-            parts.append(f"Relation detail: {rel_description}.")
+            parts.append(f"Chi tiet quan he: {rel_description}.")
+        if relation_confidence > 0:
+            parts.append(f"Do tin cay quan he: {relation_confidence:.2f}.")
         if source_description:
-            parts.append(f"About {source}: {source_description}.")
+            parts.append(f"Thong tin bo sung ve {source}: {source_description}.")
         if target_description:
-            parts.append(f"About {target}: {target_description}.")
+            parts.append(f"Thong tin bo sung ve {target}: {target_description}.")
         return " ".join(parts)
 
     def _rerank_graph_documents(self, question: str, graph_docs: List[Document]) -> List[Document]:
@@ -325,7 +332,7 @@ class GraphRAGRetriever:
             seen.add(key)
 
             doc = Document(
-                page_content=f"[Text evidence] {text}",
+                page_content=f"[Bang chung van ban] {text}",
                 metadata={
                     **meta,
                     "source_type": source_type,
@@ -468,7 +475,7 @@ class GraphRAGRetriever:
             base_score = 1.0 - (idx * 0.03)
             docs.append(
                 Document(
-                    page_content=f"[Text evidence] {text}",
+                    page_content=f"[Bang chung van ban] {text}",
                     metadata={
                         **meta,
                         "source_type": "text_global",
@@ -541,10 +548,8 @@ class GraphRAGRetriever:
             r"\bnoi ve gi\b",
             r"\btom tat\b",
             r"\btong quan\b",
-            r"\boverview\b",
-            r"\bsummary\b",
-            r"\bmain idea\b",
-            r"\bwhat is.*about\b",
+            r"\btoan canh\b",
+            r"\bkhai quat\b",
         ]
         return any(re.search(pattern, q) for pattern in patterns)
 
@@ -632,7 +637,7 @@ class GraphRAGRetriever:
             retrieval_score = (0.7 * semantic_score) + (0.3 * lexical_score)
 
             doc = Document(
-                page_content=f"[Community {community_id}] {report}",
+                page_content=f"[Cong dong {community_id}] {report}",
                 metadata={
                     "source_type": "community",
                     "community_id": community_id,
@@ -667,6 +672,7 @@ class GraphRAGRetriever:
                neighbor.name AS target,
                coalesce(neighbor.original_name, neighbor.name) AS target_display,
                coalesce(r.description, '') AS rel_description,
+               coalesce(r.confidence, 0.0) AS rel_confidence,
                coalesce(e.description, '') AS source_description,
                coalesce(neighbor.description, '') AS target_description
         LIMIT $raw_limit
@@ -692,6 +698,7 @@ class GraphRAGRetriever:
                     str(row.get("target_display") or ""),
                     str(row.get("relationship") or ""),
                     str(row.get("rel_description") or ""),
+                    str(row.get("rel_confidence") or ""),
                     str(row.get("source_description") or ""),
                     str(row.get("target_description") or ""),
                 ]

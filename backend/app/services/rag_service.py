@@ -147,14 +147,20 @@ class RAGService:
     def _format_sources(self, source_docs: List[Document]) -> List[Dict[str, Any]]:
         formatted_sources = []
         for doc in source_docs:
+            metadata = doc.metadata or {}
             formatted_sources.append(
                 {
                     "content": doc.page_content[:500] + "..." if len(doc.page_content) > 500 else doc.page_content,
-                    "source": doc.metadata.get("source", "unknown"),
-                    "chunk": doc.metadata.get("chunk", 0),
-                    "page_start": doc.metadata.get("page_start"),
-                    "page_end": doc.metadata.get("page_end"),
-                    "document_id": doc.metadata.get("document_id"),
+                    "source": metadata.get("source", "unknown"),
+                    "chunk": metadata.get("chunk", 0),
+                    "page_start": metadata.get("page_start"),
+                    "page_end": metadata.get("page_end"),
+                    "document_id": metadata.get("document_id"),
+                    "source_type": metadata.get("source_type", "text"),
+                    "community_id": metadata.get("community_id"),
+                    "relationship": metadata.get("relationship"),
+                    "graph_source": metadata.get("source"),
+                    "graph_target": metadata.get("target"),
                 }
             )
         return formatted_sources

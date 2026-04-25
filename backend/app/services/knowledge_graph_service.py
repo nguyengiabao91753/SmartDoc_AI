@@ -226,6 +226,7 @@ class KnowledgeGraphService:
                         "target": target,
                         "relation": str(rel.get("relation", "RELATED")).strip() or "RELATED",
                         "description": str(rel.get("description", "")).strip(),
+                        "confidence": float(rel.get("confidence", 0.0) or 0.0),
                         "document_id": str(document_id),
                     }
                 )
@@ -238,6 +239,7 @@ class KnowledgeGraphService:
                     MATCH (b:Entity {name: data.target})
                     MERGE (a)-[r:RELATED {type: data.relation}]->(b)
                     SET r.description = data.description,
+                        r.confidence = data.confidence,
                         r.document_id = coalesce(r.document_id, data.document_id),
                         r.document_ids = CASE
                             WHEN r.document_ids IS NULL THEN [data.document_id]
@@ -272,12 +274,13 @@ class KnowledgeGraphService:
         tx.run(query, name=name, label=label, description=description, embedding=embedding, doc_id=str(doc_id))
 
     @staticmethod
-    def _create_relationship(tx, source, target, relation, description, doc_id):
+    def _create_relationship(tx, source, target, relation, description, doc_id, confidence=0.0):
         query = """
         MATCH (a:Entity {name: $source})
         MATCH (b:Entity {name: $target})
         MERGE (a)-[r:RELATED {type: $relation}]->(b)
         SET r.description = $description,
+            r.confidence = $confidence,
             r.document_id = coalesce(r.document_id, $doc_id),
             r.document_ids = CASE
                 WHEN r.document_ids IS NULL THEN [$doc_id]
@@ -291,6 +294,7 @@ class KnowledgeGraphService:
             target=str(target).strip().lower(),
             relation=relation,
             description=description,
+            confidence=float(confidence or 0.0),
             doc_id=str(doc_id),
         )
 

@@ -95,13 +95,6 @@ class GraphRAGPlanner:
             r"\btai lieu.*ve gi\b",
             r"\bmuc dich\b",
             r"\bkhai quat\b",
-            r"\boverall\b",
-            r"\bsummary\b",
-            r"\boverview\b",
-            r"\bwhat.*about\b",
-            r"\bmain (topic|idea)\b",
-            r"\bbig picture\b",
-            r"\bhigh level\b",
         ]
         local_patterns = [
             r"\bai\b",
@@ -113,10 +106,6 @@ class GraphRAGPlanner:
             r"\bso lieu\b",
             r"\bbao nhieu\b",
             r"\bnhu the nao\b",
-            r"\bwhich\b",
-            r"\bwho\b",
-            r"\bwhen\b",
-            r"\bwhere\b",
         ]
 
         global_hits = sum(1 for pattern in global_patterns if re.search(pattern, q))
