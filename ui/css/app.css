@@ -966,6 +966,9 @@ div[data-testid="stChatMessage"] pre * {
 #composer-processing-flag {
   display: none;
 }
+#composer-graphrag-mode {
+  display: none;
+}
 #content-bottom-anchor {
   display: block;
   height: 1px;
@@ -1033,6 +1036,47 @@ div[data-testid="stVerticalBlock"]:has(#composer-anchor):not(
   [data-testid="stHorizontalBlock"]
   > div[data-testid="stColumn"] {
   min-width: 0;
+}
+
+div[data-testid="stVerticalBlock"]:has(#composer-anchor):has(
+    #composer-graphrag-mode
+  ):not(:has(div[data-testid="stVerticalBlock"] #composer-anchor))
+  [data-testid="stHorizontalBlock"]
+  > div[data-testid="stColumn"]:nth-child(2),
+div[data-testid="stVerticalBlock"]:has(#composer-anchor):has(
+    #composer-graphrag-mode
+  ):not(:has(div[data-testid="stVerticalBlock"] #composer-anchor))
+  [data-testid="stHorizontalBlock"]
+  > div[data-testid="stColumn"]:nth-child(3) {
+  display: none;
+}
+
+div[data-testid="stVerticalBlock"]:has(#composer-anchor):has(
+    #composer-graphrag-mode
+  ):not(:has(div[data-testid="stVerticalBlock"] #composer-anchor))
+  [data-testid="stHorizontalBlock"]
+  > div[data-testid="stColumn"]:nth-child(1) {
+  flex: 0 0 9.5rem !important;
+  width: 9.5rem !important;
+}
+
+div[data-testid="stVerticalBlock"]:has(#composer-anchor):has(
+    #composer-graphrag-mode
+  ):not(:has(div[data-testid="stVerticalBlock"] #composer-anchor))
+  [data-testid="stHorizontalBlock"]
+  > div[data-testid="stColumn"]:nth-child(4) {
+  flex: 1 1 auto !important;
+  width: auto !important;
+  max-width: none !important;
+}
+
+div[data-testid="stVerticalBlock"]:has(#composer-anchor):has(
+    #composer-graphrag-mode
+  ):not(:has(div[data-testid="stVerticalBlock"] #composer-anchor))
+  [data-testid="stHorizontalBlock"]
+  > div[data-testid="stColumn"]:nth-child(5) {
+  flex: 0 0 3.8rem !important;
+  width: 3.8rem !important;
 }
 
 div[data-testid="stVerticalBlock"]:has(#composer-anchor):not(

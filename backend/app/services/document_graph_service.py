@@ -17,7 +17,7 @@ class DocumentGraphService:
     def __init__(self, ner_service=None):
         self.ner_service = ner_service or NERService()
         # Legacy shared graph is kept for backward compatibility only.
-        self.graph = nx.Graph()
+        self.graph = nx.MultiDiGraph()
 
     def build_in_memory_graph(
         self,
@@ -32,7 +32,8 @@ class DocumentGraphService:
         When omitted, creates a fresh graph (session-safe behavior).
         """
         LOG.info("Bat dau trich xuat do thi in-memory cho document_id=%s", document_id)
-        target_graph = graph if graph is not None else nx.Graph()
+        """ Check đồ thị đã tồn tại chưa, nếu có thì dùng đồ thị đó, nếu không thì tạo mới """
+        target_graph = graph if graph is not None else nx.Graph() 
 
         for idx, chunk in enumerate(chunks):
             text = chunk.get("page_content", "")
