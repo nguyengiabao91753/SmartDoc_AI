@@ -1,13 +1,15 @@
 import os
 import pickle
-import string
+import re
+import unicodedata
+from pathlib import Path
 from typing import Any, Dict, List
 
 import faiss
-import nltk
 import numpy as np
-from nltk.corpus import stopwords
 from rank_bm25 import BM25Okapi
+import underthesea
+from underthesea import word_tokenize
 
 from app.core.config import settings
 from app.core.logger import LOG
@@ -16,49 +18,71 @@ INDEX_FILE = os.path.join(settings.VECTOR_DIR, "faiss.index")
 META_FILE = os.path.join(settings.VECTOR_DIR, "meta.pkl")
 BM25_FILE = os.path.join(settings.VECTOR_DIR, "bm25.pkl")
 
+PREPROCESS_VERSION = "vi_underthesea_stopwords_v1"
+TOKEN_PATTERN = re.compile(r"\w+", re.UNICODE)
 
-def _ensure_stopwords():
+
+def _load_vietnamese_stopwords() -> set[str]:
+    stopwords_path = Path(underthesea.__file__).resolve().parent / "datasets" / "stopwords" / "stopwords.txt"
     try:
-        nltk.data.find("corpora/stopwords")
-    except LookupError:
-        try:
-            nltk.download("stopwords", quiet=True)
-        except Exception as exc:
-            LOG.warning("Unable to download NLTK stopwords: %s", exc)
+        return {word.strip() for word in stopwords_path.read_text(encoding="utf-8").splitlines() if word.strip()}
+    except (OSError, UnicodeError) as exc:
+        LOG.warning("Unable to load Vietnamese stopwords from underthesea: %s", exc)
+        return set()
+
+
+VIETNAMESE_STOPWORDS = _load_vietnamese_stopwords()
+
+
+def _tokenize_vietnamese(text: str) -> List[str]:
+    normalized_text = unicodedata.normalize("NFC", text or "").lower()
+    if not normalized_text.strip():
+        return []
+
+    try:
+        normalized_text = word_tokenize(normalized_text, format="text")
+    except Exception as exc:
+        LOG.debug("Vietnamese word tokenization failed; using regex fallback: %s", exc)
+
+    return TOKEN_PATTERN.findall(normalized_text)
 
 
 def preprocess_text(text: str) -> List[str]:
-    _ensure_stopwords()
-    try:
-        stop_words = set(stopwords.words("english"))
-    except LookupError:
-        stop_words = set()
-
-    normalized_text = (text or "").lower()
-    normalized_text = normalized_text.translate(str.maketrans("", "", string.punctuation))
-    return [word for word in normalized_text.split() if word and word not in stop_words]
+    return [token for token in _tokenize_vietnamese(text) if token not in VIETNAMESE_STOPWORDS]
 
 
 class BM25Retriever:
     def __init__(self, corpus: List[str] | None = None):
         self.corpus = corpus or []
         self.bm25: BM25Okapi | None = None
+        self.preprocess_version = PREPROCESS_VERSION
         if self.corpus:
             self.fit(self.corpus)
 
     def fit(self, corpus: List[str]):
         self.corpus = corpus
         tokenized_corpus = [preprocess_text(doc) for doc in self.corpus]
-        self.bm25 = BM25Okapi(tokenized_corpus) if tokenized_corpus else None
+        self.bm25 = BM25Okapi(tokenized_corpus) if any(tokenized_corpus) else None
+        self.preprocess_version = PREPROCESS_VERSION
 
     def search(self, query: str, top_k: int | None = 5) -> List[Dict[str, Any]]:
         if not self.bm25:
             return []
 
         tokenized_query = preprocess_text(query)
+        if not tokenized_query:
+            return []
+
         doc_scores = self.bm25.get_scores(tokenized_query)
-        limit = len(doc_scores) if top_k is None else min(top_k, len(doc_scores))
-        top_indices = np.argsort(doc_scores)[-limit:][::-1]
+        matched_indices = np.flatnonzero(doc_scores > 0)
+        if matched_indices.size == 0:
+            return []
+
+        limit = matched_indices.size if top_k is None else min(max(top_k, 0), matched_indices.size)
+        if limit == 0:
+            return []
+
+        top_indices = matched_indices[np.argsort(doc_scores[matched_indices])[-limit:]][::-1]
         return [{"score": float(doc_scores[i]), "id": int(i)} for i in top_indices]
 
     def save(self, filepath: str):
@@ -72,7 +96,7 @@ class BM25Retriever:
 
 
 class FaissStore:
-    def __init__(self, dim: int, index_type: str = "flat"):
+    def __init__(self, dim: int, index_type: str = "hnsw"):
         os.makedirs(settings.VECTOR_DIR, exist_ok=True)
         self.dim = dim
         self.index_type = index_type.lower()
@@ -115,7 +139,7 @@ class FaissStore:
         return True
 
     def _refresh_bm25(self):
-        texts = [meta.get("text", "") for meta in self.meta if meta.get("text")]
+        texts = [meta.get("text", "") for meta in self.meta]
         if texts:
             self.bm25_retriever.fit(texts)
         else:
@@ -141,7 +165,7 @@ class FaissStore:
         return added_ids
 
     def search(self, q_vector: np.ndarray, top_k: int, filters: Dict[str, Any] | None = None):
-        if self.index.ntotal == 0:
+        if self.index.ntotal == 0 or top_k <= 0:
             return []
 
         candidate_k = self.index.ntotal if filters else min(top_k, self.index.ntotal)
@@ -161,7 +185,7 @@ class FaissStore:
         return results
 
     def keyword_search(self, query_text: str, top_k: int, filters: Dict[str, Any] | None = None):
-        if not self.meta:
+        if not self.meta or top_k <= 0:
             return []
 
         candidate_k = len(self.meta) if filters else top_k
@@ -237,7 +261,12 @@ class FaissStore:
                 self.meta = pickle.load(file_handle)
 
             if os.path.exists(BM25_FILE):
-                self.bm25_retriever = BM25Retriever.load(BM25_FILE)
+                bm25_retriever = BM25Retriever.load(BM25_FILE)
+                if getattr(bm25_retriever, "preprocess_version", None) == PREPROCESS_VERSION:
+                    self.bm25_retriever = bm25_retriever
+                else:
+                    LOG.info("Rebuilding BM25 cache with Vietnamese preprocessing")
+                    self._refresh_bm25()
             else:
                 self._refresh_bm25()
 
