@@ -6,9 +6,11 @@ from app.rag.base import BaseRAGModeEngine
 from app.rag.modes.corag.engine import CoRAGEngine
 from app.rag.modes.graphrag.engine import GraphRAGEngine
 from app.rag.modes.rag.engine import VanillaRAGEngine
+from app.rag.modes.selfrag.engine import SelfRAGEngine
 
 ENGINE_BY_MODE: Dict[str, Type[BaseRAGModeEngine]] = {
     "rag": VanillaRAGEngine,
+    "selfrag": SelfRAGEngine,
     "corag": CoRAGEngine,
     "graphrag": GraphRAGEngine,
 }
@@ -16,6 +18,8 @@ ENGINE_BY_MODE: Dict[str, Type[BaseRAGModeEngine]] = {
 MODE_ALIASES = {
     "default": "rag",
     "vanilla": "rag",
+    "self-rag": "selfrag",
+    "self_rag": "selfrag",
     "co-rag": "corag",
     "graph": "graphrag",
     "graph-rag": "graphrag",
@@ -23,6 +27,7 @@ MODE_ALIASES = {
 
 MODE_LABELS = {
     "rag": "RAG",
+    "selfrag": "Self-RAG",
     "corag": "CoRAG",
     "graphrag": "GraphRAG",
 }
