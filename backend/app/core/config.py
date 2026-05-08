@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     LLM_NUM_PREDICT: int = int(os.getenv("LLM_NUM_PREDICT", 512))
     LLM_NUM_BATCH: int = int(os.getenv("LLM_NUM_BATCH", 512))
     LLM_KEEP_ALIVE: str = os.getenv("LLM_KEEP_ALIVE", "5m")
+    CORAG_NUM_CTX: int = int(os.getenv("CORAG_NUM_CTX", 4096))
+    CORAG_NUM_PREDICT: int = int(os.getenv("CORAG_NUM_PREDICT", 1024))
+    CORAG_MAX_CONTEXT_CHARS: int = int(os.getenv("CORAG_MAX_CONTEXT_CHARS", 8000))
+    CORAG_MAX_DOC_CHARS: int = int(os.getenv("CORAG_MAX_DOC_CHARS", 900))
 
     # Embedding model (sentence-transformers)
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")

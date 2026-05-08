@@ -28,6 +28,13 @@ RAG_MODE_OPTIONS = [MODE_LABELS[mode] for mode in AVAILABLE_RAG_MODES]
 RAG_MODE_BY_LABEL = {MODE_LABELS[mode]: mode for mode in AVAILABLE_RAG_MODES}
 DEFAULT_RAG_MODE = normalize_rag_mode(getattr(settings, "RAG_MODE", "rag"))
 DEFAULT_RAG_MODE_LABEL = MODE_LABELS.get(DEFAULT_RAG_MODE, "RAG")
+GRAPH_RAG_MODE = "graphrag"
+GRAPH_RAG_LABEL = MODE_LABELS.get(GRAPH_RAG_MODE, "GraphRAG")
+GRAPH_RAG_SEARCH_TYPE = "hybrid"
+SEMANTIC_SEARCH_LABEL = "Ngữ nghĩa"
+HYBRID_SEARCH_LABEL = "Hybrid"
+LEGACY_KEYWORD_SEARCH_LABEL = "Từ khóa"
+SEARCH_MODE_OPTIONS = [SEMANTIC_SEARCH_LABEL, HYBRID_SEARCH_LABEL]
 
 
 def load_css_file() -> str:
@@ -75,7 +82,7 @@ def init_state():
         "last_upload_success": None,
         "last_graph_success": None,
         "current_rag_mode_label": DEFAULT_RAG_MODE_LABEL,
-        "current_search_label": "Ngữ nghĩa",
+        "current_search_label": SEMANTIC_SEARCH_LABEL,
         "current_detail_label": "Nhanh",
         "composer_prompt": "",
         "open_session_menu_id": None,
@@ -90,6 +97,11 @@ def init_state():
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
+
+    if st.session_state.get("current_search_label") == LEGACY_KEYWORD_SEARCH_LABEL:
+        st.session_state.current_search_label = HYBRID_SEARCH_LABEL
+    if st.session_state.get("search_mode_select") == LEGACY_KEYWORD_SEARCH_LABEL:
+        st.session_state.search_mode_select = HYBRID_SEARCH_LABEL
 
 
 def schedule_bottom_scroll():
@@ -121,7 +133,7 @@ def apply_scheduled_bottom_scroll():
 
 
 def is_busy() -> bool:
-    is_loading_graph = st.session_state.get("current_rag_mode_label") == "GraphRAG" and st.session_state.get("_graph_svc_instance") is None
+    is_loading_graph = st.session_state.get("current_rag_mode_label") == GRAPH_RAG_LABEL and st.session_state.get("_graph_svc_instance") is None
     
     return any(
         [
@@ -451,14 +463,22 @@ def queue_query(prompt: str, active_session: dict | None, rerun: bool = True):
             st.rerun()
         return
 
+    rag_mode = RAG_MODE_BY_LABEL.get(st.session_state.current_rag_mode_label, "rag")
+    if rag_mode == GRAPH_RAG_MODE:
+        search_type = GRAPH_RAG_SEARCH_TYPE
+        detail_level = "fast"
+    else:
+        search_type = "vector" if st.session_state.current_search_label == SEMANTIC_SEARCH_LABEL else "hybrid"
+        detail_level = "fast" if st.session_state.current_detail_label == "Nhanh" else "detailed"
+
     st.session_state.queued_query = {
         "session_id": active_session["id"],
         "document_id": active_session.get("document_id"),
         "document_ids": document_ids,
         "prompt": prompt,
-        "rag_mode": RAG_MODE_BY_LABEL.get(st.session_state.current_rag_mode_label, "rag"),
-        "search_type": "vector" if st.session_state.current_search_label == "Ngữ nghĩa" else "hybrid",
-        "detail_level": "fast" if st.session_state.current_detail_label == "Nhanh" else "detailed",
+        "rag_mode": rag_mode,
+        "search_type": search_type,
+        "detail_level": detail_level,
     }
     st.session_state.latest_sources_by_session[active_session["id"]] = []
     st.session_state.last_upload_success = None
@@ -484,7 +504,7 @@ def submit_query_from_state(active_session: dict | None):
 def on_rag_mode_change():
     new_label = st.session_state.get("rag_mode_select")
     st.session_state.current_rag_mode_label = new_label
-    if new_label == "GraphRAG":
+    if new_label == GRAPH_RAG_LABEL:
         st.session_state.initializing_graph = True
         st.session_state._graph_init_failed = False
 
@@ -1106,6 +1126,14 @@ def render_composer(active_session: dict | None):
         if processing:
             st.markdown('<div id="composer-processing-flag"></div>', unsafe_allow_html=True)
 
+        selected_rag_label = st.session_state.get(
+            "rag_mode_select",
+            st.session_state.get("current_rag_mode_label", DEFAULT_RAG_MODE_LABEL),
+        )
+        is_graphrag_mode = selected_rag_label == GRAPH_RAG_LABEL
+        if is_graphrag_mode:
+            st.markdown('<div id="composer-graphrag-mode"></div>', unsafe_allow_html=True)
+
         composer_cols = st.columns([1.55, 1.55, 1.3, 5.5, 0.85], gap="small")
         with composer_cols[0]:
             st.selectbox(
@@ -1117,35 +1145,39 @@ def render_composer(active_session: dict | None):
                 on_change=on_rag_mode_change,
             )
             st.session_state.current_rag_mode_label = st.session_state.get("rag_mode_select", DEFAULT_RAG_MODE_LABEL)
-        with composer_cols[1]:
-            st.session_state.current_search_label = st.selectbox(
-                "Mode",
-                options=["Ngữ nghĩa", "Từ khóa"],
-                label_visibility="collapsed",
-                disabled=disabled,
-                key="search_mode_select",
-            )
-        with composer_cols[2]:
-            if st.session_state.current_search_label == "Ngữ nghĩa":
-                st.session_state.current_detail_label = st.selectbox(
-                    "Depth",
-                    options=["Nhanh", "Kỹ"],
+            is_graphrag_mode = st.session_state.current_rag_mode_label == GRAPH_RAG_LABEL
+
+        if is_graphrag_mode:
+            st.session_state.current_detail_label = "Nhanh"
+        else:
+            with composer_cols[1]:
+                st.session_state.current_search_label = st.selectbox(
+                    "Mode",
+                    options=SEARCH_MODE_OPTIONS,
                     label_visibility="collapsed",
                     disabled=disabled,
-                    key="detail_mode_select",
+                    key="search_mode_select",
                 )
-            else:
-                st.selectbox(
-                    "DepthLocked",
-                    options=["Tự động"],
-                    label_visibility="collapsed",
-                    disabled=True,
-                    key="detail_mode_select_locked",
-                )
-                st.session_state.current_detail_label = "Nhanh"
+            with composer_cols[2]:
+                if st.session_state.current_search_label == SEMANTIC_SEARCH_LABEL:
+                    st.session_state.current_detail_label = st.selectbox(
+                        "Depth",
+                        options=["Nhanh", "Kỹ"],
+                        label_visibility="collapsed",
+                        disabled=disabled,
+                        key="detail_mode_select",
+                    )
+                else:
+                    st.selectbox(
+                        "DepthLocked",
+                        options=["Tự động"],
+                        label_visibility="collapsed",
+                        disabled=True,
+                        key="detail_mode_select_locked",
+                    )
+                    st.session_state.current_detail_label = "Nhanh"
         
         with composer_cols[3]:
-            is_graphrag_mode = st.session_state.current_rag_mode_label == "GraphRAG"
             show_build_button = False
             missing_doc_ids: list[int] = []
 
@@ -1233,7 +1265,7 @@ def render_main_area(rag: RAGService | None, active_session: dict | None):
             graph_action_ph = st.empty() 
 
             # Hiện thẻ thông báo chuẩn màu xanh lá (dấu tick tròn) khi xây dựng/cập nhật xong
-            is_graphrag_mode = st.session_state.get("current_rag_mode_label") == "GraphRAG"
+            is_graphrag_mode = st.session_state.get("current_rag_mode_label") == GRAPH_RAG_LABEL
             graph_success_msg = st.session_state.get("last_graph_success")
 
             if is_graphrag_mode and graph_success_msg and not st.session_state.get("processing_graph"):
@@ -1273,7 +1305,7 @@ def main():
         st.session_state.initializing_graph = False
         st.session_state._do_graph_load = False
 
-    if st.session_state.current_rag_mode_label == "GraphRAG" and st.session_state.get("_graph_svc_instance") is None:
+    if st.session_state.current_rag_mode_label == GRAPH_RAG_LABEL and st.session_state.get("_graph_svc_instance") is None:
         if not st.session_state.get("initializing_graph") and not st.session_state.get("_do_graph_load") and not st.session_state.get("_graph_init_failed"):
             st.session_state.initializing_graph = True
             st.rerun()
@@ -1291,7 +1323,7 @@ def main():
     apply_scheduled_bottom_scroll()
 
     # TẢI SERVICE VÀ HIỂN THỊ SPINNER GIẢ LẬP ĐỊNH DẠNG INLINE CODE
-    is_loading_graph = st.session_state.current_rag_mode_label == "GraphRAG" and st.session_state.get("_graph_svc_instance") is None
+    is_loading_graph = st.session_state.current_rag_mode_label == GRAPH_RAG_LABEL and st.session_state.get("_graph_svc_instance") is None
     if is_loading_graph:
         with graph_action_ph.container():
             with st.spinner("Running `get_graph_rag_service()` ."):
