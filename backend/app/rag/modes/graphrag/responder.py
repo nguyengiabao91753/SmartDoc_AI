@@ -20,11 +20,17 @@ class GraphRAGResponder:
         source_documents: List[Document],
         llm_model: str | None = None,
         strategy: str = "local",
+        conversation_history: str | None = None,
     ) -> str:
         if not source_documents:
             return "Khong tim thay thong tin lien quan trong do thi tri thuc de tra loi cau hoi nay."
 
-        prompt = self._build_prompt(question=question, source_documents=source_documents, strategy=strategy)
+        prompt = self._build_prompt(
+            question=question,
+            source_documents=source_documents,
+            strategy=strategy,
+            conversation_history=conversation_history,
+        )
         llm = get_llm(model=llm_model, temperature=0.0)
         raw_answer = str(llm.invoke(prompt)).strip()
         return self._postprocess_answer(raw_answer)
@@ -36,22 +42,49 @@ class GraphRAGResponder:
         source_documents: List[Document],
         llm_model: str | None = None,
         strategy: str = "local",
+        conversation_history: str | None = None,
     ):
         if not source_documents:
             yield "Khong tim thay thong tin lien quan trong do thi tri thuc de tra loi cau hoi nay."
             return
 
-        prompt = self._build_prompt(question=question, source_documents=source_documents, strategy=strategy)
+        prompt = self._build_prompt(
+            question=question,
+            source_documents=source_documents,
+            strategy=strategy,
+            conversation_history=conversation_history,
+        )
         llm = get_llm(model=llm_model, temperature=0.0)
         for chunk in llm.stream(prompt):
             yield chunk
 
-    def _build_prompt(self, *, question: str, source_documents: List[Document], strategy: str) -> str:
+    def _build_prompt(
+        self,
+        *,
+        question: str,
+        source_documents: List[Document],
+        strategy: str,
+        conversation_history: str | None = None,
+    ) -> str:
         if strategy == "global":
-            return self._build_global_prompt(question=question, source_documents=source_documents)
-        return self._build_local_prompt(question=question, source_documents=source_documents)
+            return self._build_global_prompt(
+                question=question,
+                source_documents=source_documents,
+                conversation_history=conversation_history,
+            )
+        return self._build_local_prompt(
+            question=question,
+            source_documents=source_documents,
+            conversation_history=conversation_history,
+        )
 
-    def _build_global_prompt(self, *, question: str, source_documents: List[Document]) -> str:
+    def _build_global_prompt(
+        self,
+        *,
+        question: str,
+        source_documents: List[Document],
+        conversation_history: str | None = None,
+    ) -> str:
         graph_items: List[str] = []
         text_items: List[str] = []
         community_items: List[str] = []
@@ -90,6 +123,7 @@ class GraphRAGResponder:
             "- Khong duoc mo dau bang cac cum: 'Dua tren phan tich', 'Cau hoi nay', 'Tra loi la', 'Cau tra loi cong dong'.\n"
             "- Khong duoc xung ho theo kieu phan tich quy trinh, chi tra loi nhu tro ly binh thuong.\n"
             "- Tra loi thanh mot doan tu nhien, ro nghia; neu can thi them 1 cau ket luan ve muc do chac chan.\n\n"
+            f"NGU CANH HOI THOAI TRUOC:\n{conversation_history or '(Khong co)'}\n\n"
             f"THONG TIN DO THI:\n{graph_context}\n\n"
             f"BANG CHUNG VAN BAN:\n{text_context}\n\n"
             f"BAO CAO CONG DONG:\n{community_context}\n\n"
@@ -97,7 +131,13 @@ class GraphRAGResponder:
             "TRA LOI:"
         )
 
-    def _build_local_prompt(self, *, question: str, source_documents: List[Document]) -> str:
+    def _build_local_prompt(
+        self,
+        *,
+        question: str,
+        source_documents: List[Document],
+        conversation_history: str | None = None,
+    ) -> str:
         graph_items: List[str] = []
         text_items: List[str] = []
 
@@ -126,6 +166,7 @@ class GraphRAGResponder:
             "- Khong lap lai cau hoi.\n"
             "- Khong duoc mo dau bang cac cum: 'Dua tren phan tich', 'Cau hoi nay', 'Tra loi la', 'Cau tra loi cong dong'.\n"
             "- Tra loi thanh mot doan tu nhien, khong chia muc cau truc kieu bao cao.\n\n"
+            f"NGU CANH HOI THOAI TRUOC:\n{conversation_history or '(Khong co)'}\n\n"
             f"THONG TIN DO THI:\n{graph_context}\n\n"
             f"BANG CHUNG VAN BAN BO SUNG:\n{text_context}\n\n"
             f"CAU HOI:\n{question}\n\n"

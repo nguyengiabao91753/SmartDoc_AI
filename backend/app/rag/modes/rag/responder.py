@@ -14,6 +14,7 @@ class RAGResponder:
         question: str,
         source_documents: List[Document],
         llm_model: str | None = None,
+        conversation_history: str | None = None,
     ) -> str:
         if not source_documents:
             return "Khong tim thay noi dung phu hop trong tai lieu hien tai."
@@ -27,6 +28,7 @@ class RAGResponder:
             "Tra loi bang cung ngon ngu voi cau hoi; neu cau hoi bang tieng Viet thi tra loi bang tieng Viet ro rang. "
             "Neu khong du thong tin, noi ro khong tim thay trong tai lieu. "
             "LUU Y QUAN TRONG: KHONG lap lai cau hoi, CHI dua ra cau tra loi truc tiep.\n\n"
+            f"NGU CANH HOI THOAI TRUOC:\n{conversation_history or '(Khong co)'}\n\n"
             f"NGU CANH:\n{context}\n\n"
             f"CAU HOI:\n{question}\n\n"
             "TRA LOI:"

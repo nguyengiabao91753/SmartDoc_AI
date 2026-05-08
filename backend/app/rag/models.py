@@ -13,6 +13,7 @@ class RAGQueryRequest:
     document_ids: List[int] | None = None
     session_id: int | None = None
     llm_model: str | None = None
+    conversation_history: str | None = None
     stream: bool = False
 
 

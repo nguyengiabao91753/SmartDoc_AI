@@ -19,6 +19,7 @@ class CoRAGPlan:
     document_ids: List[int] | None = None
     session_id: int | None = None
     llm_model: str | None = None
+    conversation_history: str | None = None
 
 
 class CoRAGPlanner:
@@ -31,7 +32,11 @@ class CoRAGPlanner:
     MAX_SUBQUERIES = 3
 
     def plan(self, request: RAGQueryRequest) -> CoRAGPlan:
-        sub_queries = self._decompose(request.question, request.llm_model)
+        sub_queries = self._decompose(
+            request.question,
+            request.llm_model,
+            request.conversation_history,
+        )
         return CoRAGPlan(
             question=request.question,
             sub_queries=sub_queries,
@@ -41,9 +46,15 @@ class CoRAGPlanner:
             document_ids=request.document_ids,
             session_id=request.session_id,
             llm_model=request.llm_model,
+            conversation_history=request.conversation_history,
         )
 
-    def _decompose(self, question: str, llm_model: str | None = None) -> List[str]:
+    def _decompose(
+        self,
+        question: str,
+        llm_model: str | None = None,
+        conversation_history: str | None = None,
+    ) -> List[str]:
         """
         Tách câu hỏi thành sub-queries KHÁC NHAU và KHÔNG trùng nhau.
         Nếu câu hỏi đơn giản chỉ có 1 khía cạnh → trả về đúng 1 sub-query.
@@ -56,6 +67,7 @@ class CoRAGPlanner:
             "- Nếu câu hỏi chỉ có 1 ý → chỉ tạo 1 sub-question.\n"
             "- Nếu câu hỏi có nhiều ý → tạo 2-3 sub-questions, mỗi cái 1 ý riêng.\n"
             "- Sub-question phải ngắn gọn, cụ thể, dễ tìm kiếm.\n\n"
+            f"NGỮ CẢNH HỘI THOẠI TRƯỚC:\n{conversation_history or '(không có)'}\n\n"
             "CHỈ trả về JSON array thuần, không giải thích, không markdown, không ```\n"
             "Ví dụ: [\"câu hỏi con 1\", \"câu hỏi con 2\"]\n\n"
             f"Câu hỏi: {question}\n\n"

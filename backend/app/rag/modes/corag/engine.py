@@ -41,6 +41,7 @@ class CoRAGEngine(BaseRAGModeEngine):
             source_documents=merged_docs,
             per_query_docs=per_query_docs,   # truyền thêm để build structured context
             llm_model=plan.llm_model,
+            conversation_history=plan.conversation_history,
         )
 
         metadata = {

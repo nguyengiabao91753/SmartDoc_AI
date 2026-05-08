@@ -7,9 +7,11 @@ from langchain_core.documents import Document
 
 from app.core.config import settings
 from app.core.logger import LOG
+from app.rag.conversation import build_conversation_history_context
 from app.rag.base import ModeNotImplementedError
 from app.rag.models import RAGQueryRequest
 from app.rag.registry import AVAILABLE_RAG_MODES, build_engine_registry, normalize_rag_mode
+from app.services.database_service import db_service
 from app.services.document_service import DocumentService
 from app.services.embedding_service import EmbeddingService
 from app.vectorstore.faiss_store import FaissStore
@@ -61,6 +63,7 @@ class RAGService:
         document_ids: List[int] | None = None,
         session_id: int | None = None,
         llm_model: str | None = None,
+        conversation_history: str | None = None,
     ) -> Dict[str, Any]:
         engine = self.engines[rag_mode]
         result = engine.query(
@@ -72,6 +75,7 @@ class RAGService:
                 document_ids=document_ids,
                 session_id=session_id,
                 llm_model=llm_model,
+                conversation_history=conversation_history,
             )
         )
         return {
@@ -101,6 +105,7 @@ class RAGService:
         document_id: int | None,
         document_ids: List[int] | None = None,
         session_id: int | None = None,
+        conversation_history: str | None = None,
     ) -> Dict[str, Any] | None:
         available = self._get_ollama_models()
         if not available:
@@ -137,6 +142,7 @@ class RAGService:
                 document_ids=document_ids,
                 session_id=session_id,
                 llm_model=fallback_model,
+                conversation_history=conversation_history,
             )
             fallback_result["answer"] = f"[Dang dung model nhe {fallback_model}]\n\n{fallback_result['answer']}"
             return fallback_result
@@ -245,6 +251,12 @@ class RAGService:
         resolved_search_type = self._resolve_search_type(search_type)
         resolved_top_k = self._resolve_top_k(detail_level=detail_level, top_k=top_k)
         resolved_mode = self._resolve_rag_mode(rag_mode)
+        conversation_history = None
+        if session_id is not None:
+            conversation_history = build_conversation_history_context(
+                db_service.get_chat_history(session_id),
+                max_messages=6,
+            )
 
         try:
             return self._execute_query(
@@ -255,6 +267,7 @@ class RAGService:
                 document_id=document_id,
                 document_ids=document_ids,
                 session_id=session_id,
+                conversation_history=conversation_history,
             )
         except ModeNotImplementedError as exc:
             return {
