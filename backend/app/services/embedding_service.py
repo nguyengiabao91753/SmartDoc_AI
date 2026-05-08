@@ -30,7 +30,7 @@ class EmbeddingService:
         self.model = SentenceTransformer(self.model_name)
         self.batch_size = batch_size
         self.normalize = normalize
-        self.dim = self.model.get_sentence_embedding_dimension()
+        self.dim = self.model.get_embedding_dimension()
 
     def get_dimension(self) -> int:
         return self.dim
