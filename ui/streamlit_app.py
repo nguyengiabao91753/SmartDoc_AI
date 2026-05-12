@@ -13,7 +13,12 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 
+# Ensure project root and backend are importable.
+# - `ui.*` imports rely on project root being on sys.path
+# - backend imports use the backend/ folder
+sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
+
 
 from app.core.config import settings
 from app.core.logger import LOG
@@ -21,6 +26,9 @@ from app.database.sqlite_db import init_db
 from app.rag.registry import AVAILABLE_RAG_MODES, MODE_LABELS, normalize_rag_mode
 from app.services.database_service import db_service
 from app.services.rag_service import RAGService
+
+from ui.chunk_config_ui import chunk_params_ui
+
 
 st.set_page_config(layout="wide", page_title="SmartDoc AI")
 
@@ -320,6 +328,18 @@ def normalize_uploaded_files(uploaded_files) -> list:
 
 
 def queue_document_upload(rag: RAGService | None, uploaded_files, active_session: dict | None):
+    # Chunk params lấy từ UI (nếu đã render)
+    pending_chunk_params = {
+        "chunk_size": st.session_state.get("upload_chunk_size"),
+        # UI state key đang dùng là upload_chunk_overlap (không phải upload_chunk_overlap_sentences)
+        "chunk_overlap_sentences": st.session_state.get("upload_chunk_overlap"),
+    }
+
+    # Chỉ đưa vào payload khi đủ giá trị (tránh None)
+    pending_chunk_params = {
+        k: v for k, v in pending_chunk_params.items() if v is not None
+    }
+
     if rag is None:
         st.session_state.flash_message = {"type": "error", "text": "RAG service chưa sẵn sàng."}
         st.rerun()
@@ -339,6 +359,7 @@ def queue_document_upload(rag: RAGService | None, uploaded_files, active_session
             for uploaded_file in files
         ],
         "display_name": files[0].name if len(files) == 1 else f"{len(files)} tài liệu",
+        "chunk_params": pending_chunk_params,
     }
     st.session_state.last_upload_success = None
     st.session_state.last_graph_success = None
@@ -347,6 +368,12 @@ def queue_document_upload(rag: RAGService | None, uploaded_files, active_session
 
 def process_pending_upload(rag: RAGService | None):
     payload = st.session_state.get("processing_upload")
+    chunk_params = payload.get("chunk_params") or {} if isinstance(payload, dict) else {}
+
+    # Inject vào settings để rag_service.add_documents() dùng được
+    if chunk_params:
+        settings.UI_CHUNK_SIZE = chunk_params.get("chunk_size")
+        settings.UI_CHUNK_OVERLAP_SENTENCES = chunk_params.get("chunk_overlap_sentences")
     if not payload:
         return
 
@@ -785,6 +812,12 @@ def render_upload_stage(rag: RAGService | None, active_session: dict | None):
             """,
             unsafe_allow_html=True,
         )
+
+        st.subheader("Chunking parameters")
+        chunk_ui = chunk_params_ui(key_prefix="upload_chunk")
+        st.session_state.upload_chunk_size = chunk_ui["chunk_size"]
+        st.session_state.upload_chunk_overlap = chunk_ui["chunk_overlap"]
+
         uploaded_files = st.file_uploader(
             "PDF hoặc DOCX",
             type=["pdf", "docx"],

@@ -73,7 +73,23 @@ class GraphRAGService:
         display_name = self._get_original_filename(os.path.basename(file_path))
         LOG.info("[GraphRAG] Building graph for doc_id=%s (%s)", doc_id_str, display_name)
 
-        langchain_docs = self.doc_service.load_document(file_path)
+        ui_chunk_size = getattr(settings, "UI_CHUNK_SIZE", None)
+        ui_chunk_overlap_sentences = getattr(settings, "UI_CHUNK_OVERLAP_SENTENCES", None)
+
+        langchain_docs = self.doc_service.load_document(
+            file_path,
+            chunk_size=(
+                int(ui_chunk_size)
+                if ui_chunk_size is not None
+                else int(settings.CHUNK_SIZE)
+            ),
+            chunk_overlap_sentences=(
+                int(ui_chunk_overlap_sentences)
+                if ui_chunk_overlap_sentences is not None
+                else int(settings.OVERLAP_SENTENCES)
+            ),
+        )
+
         if not langchain_docs:
             raise ValueError(f"Tai lieu '{display_name}' khong co noi dung de xay do thi")
 

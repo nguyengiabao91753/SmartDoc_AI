@@ -10,7 +10,8 @@ from typing import Any, Dict, List, Tuple
 from app.core.logger import LOG
 
 try:
-    from underthesea import sent_tokenize
+    from app.nlp.underthesea_compat import sent_tokenize
+
 
     UNDERTHESEA_AVAILABLE = True
 except ImportError:

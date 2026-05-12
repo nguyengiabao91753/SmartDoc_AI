@@ -11,6 +11,8 @@ from app.rag.base import ModeNotImplementedError
 from app.rag.models import RAGQueryRequest
 from app.rag.registry import AVAILABLE_RAG_MODES, build_engine_registry, normalize_rag_mode
 from app.services.document_service import DocumentService
+from app.core.chunk_params import validate_chunk_params
+
 from app.services.embedding_service import EmbeddingService
 from app.vectorstore.faiss_store import FaissStore
 
@@ -173,10 +175,26 @@ class RAGService:
     ) -> Dict[str, Any]:
         try:
             LOG.info("Dang xu ly tai lieu: %s", file_path)
+            ui_chunk_size = getattr(settings, "UI_CHUNK_SIZE", None)
+            ui_chunk_overlap_sentences = getattr(settings, "UI_CHUNK_OVERLAP_SENTENCES", None)
+
+            # Validate chunking parameters from UI (or fall back to defaults)
+            resolved = validate_chunk_params(
+                chunk_size=ui_chunk_size if ui_chunk_size is not None else int(settings.CHUNK_SIZE),
+                chunk_overlap_sentences=(
+                    ui_chunk_overlap_sentences
+                    if ui_chunk_overlap_sentences is not None
+                    else int(settings.OVERLAP_SENTENCES)
+                ),
+            )
+
             documents = self.doc_service.load_document(
                 file_path,
                 extra_metadata={"document_id": document_id} if document_id is not None else None,
+                chunk_size=resolved.chunk_size,
+                chunk_overlap_sentences=resolved.chunk_overlap_sentences,
             )
+
             if not documents:
                 raise ValueError("Khong co noi dung duoc tai tu file")
 
