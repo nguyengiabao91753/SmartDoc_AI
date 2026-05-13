@@ -1069,6 +1069,13 @@ def render_thinking_card(rag_mode: str = "rag"):
             ("📚", "Truy xuất tài liệu", "Tìm kiếm FAISS + BM25 trên vectorstore..."),
             ("🤖", "Sinh câu trả lời", "LLM đọc context và tổng hợp câu trả lời..."),
         ],
+        "selfrag": [
+            ("SR", "Lap ke hoach", "Chuan hoa cau hoi va chon chien luoc tu danh gia..."),
+            ("RR", "Retrieve + rerank", "Lay bang chung ban dau va xep hang lai nguon tai lieu..."),
+            ("EV", "Tu danh gia", "LLM cham diem do phu hop, day du va grounded..."),
+            ("MH", "Rewrite / multi-hop", "Tu cai thien truy van hoac mo rong them sub-query neu can..."),
+            ("CF", "Confidence gating", "Chap nhan cau tra loi khi vuot nguong tin cay..."),
+        ],
         "corag": [
             ("🧩", "Phân tách câu hỏi", "LLM tách thành các sub-questions độc lập..."),
             ("🔎", "Multi-retrieval", "Retrieve FAISS+BM25 cho từng sub-question..."),
@@ -1084,7 +1091,7 @@ def render_thinking_card(rag_mode: str = "rag"):
     }
 
     steps = STEPS.get(rag_mode, STEPS["rag"])
-    mode_label = {"rag": "RAG", "corag": "CoRAG", "graphrag": "GraphRAG"}.get(rag_mode, rag_mode.upper())
+    mode_label = MODE_LABELS.get(rag_mode, rag_mode.upper())
 
     steps_items = ""
     for i, (icon, label, detail) in enumerate(steps):
@@ -1108,6 +1115,173 @@ def render_thinking_card(rag_mode: str = "rag"):
       </div>
       <div class="thinking-card-steps">
         {steps_items}
+      </div>
+    </div>
+    """
+    st.html(html)
+
+
+def render_thinking_card(rag_mode: str = "rag"):
+    """Hiá»ƒn thá»‹ thinking card vá»›i cÃ¡c bÆ°á»›c xá»­ lÃ½ theo tá»«ng mode."""
+
+    steps_by_mode = {
+        "rag": [
+            ("RE", "Embed câu hỏi", "Chuyển câu hỏi thành vector embedding..."),
+            ("RT", "Truy xuất tài liệu", "Tìm kiếm FAISS + BM25 trên vectorstore..."),
+            ("LL", "Sinh câu trả lời", "LLM đọc context và tổng hợp câu trả lời..."),
+        ],
+        "selfrag": [
+            ("SR", "Lập kế hoạch", "Chuẩn hóa câu hỏi và chọn chiến lược tự đánh giá..."),
+            ("RR", "Retrieve + rerank", "Lấy bằng chứng ban đầu và xếp hạng lại nguồn tài liệu..."),
+            ("EV", "Tự đánh giá", "LLM chấm điểm độ phù hợp, độ đầy đủ và grounded..."),
+            ("MH", "Rewrite / multi-hop", "Tự cải thiện truy vấn hoặc mở rộng thêm sub-query nếu cần..."),
+            ("CF", "Confidence gating", "Chấp nhận câu trả lời khi vượt ngưỡng tin cậy..."),
+        ],
+        "corag": [
+            ("QD", "Phân tách câu hỏi", "LLM tách thành các sub-questions độc lập..."),
+            ("MR", "Multi-retrieval", "Retrieve FAISS + BM25 cho từng sub-question..."),
+            ("FR", "Fusion & rerank", "RRF merge, loại trùng lặp, xếp hạng context..."),
+            ("LL", "Tổng hợp đa nguồn", "LLM đọc context tổng hợp và trả lời toàn diện..."),
+        ],
+        "graphrag": [
+            ("SD", "Seed retrieval", "Lấy chunks ban đầu qua vector / hybrid search..."),
+            ("GX", "Graph expansion", "Mở rộng sang các node liên quan trong đồ thị..."),
+            ("RK", "Re-ranking", "Xếp hạng lại context sau graph expansion..."),
+            ("LL", "Sinh câu trả lời", "LLM đọc connected evidence và tổng hợp..."),
+        ],
+    }
+    step_seconds_by_mode = {
+        "rag": 1.10,
+        "selfrag": 1.55,
+        "corag": 1.30,
+        "graphrag": 1.40,
+    }
+
+    steps = steps_by_mode.get(rag_mode, steps_by_mode["rag"])
+    mode_label = MODE_LABELS.get(rag_mode, rag_mode.upper())
+    step_seconds = step_seconds_by_mode.get(rag_mode, 1.20)
+    card_id = f"thinking-card-{uuid4().hex[:8]}"
+
+    step_blocks = []
+    for index, (icon, label, detail) in enumerate(steps):
+        is_last = index == len(steps) - 1
+        delay_seconds = index * step_seconds
+        row_class = "tk-step-hold" if is_last else "tk-step-seq"
+        row_style = f"--tk-delay:{delay_seconds:.2f}s; --tk-slot:{step_seconds:.2f}s;"
+        spinner_html = (
+            '<span class="tk-status-spinner tk-status-spinner-hold"><span class="tk-spinner"></span></span>'
+            if is_last
+            else '<span class="tk-status-spinner tk-status-spinner-seq"><span class="tk-spinner"></span></span>'
+        )
+        check_html = "" if is_last else '<span class="tk-status-check tk-check">✓</span>'
+        step_blocks.append(
+            f"""
+            <div class="tk-step tk-step-pending {row_class}" style="{row_style}">
+              <div class="tk-step-icon">{escape(icon)}</div>
+              <div class="tk-step-body">
+                <div class="tk-step-label">{escape(label)}</div>
+                <div class="tk-step-detail">{escape(detail)}</div>
+              </div>
+              <div class="tk-step-status">{spinner_html}{check_html}</div>
+            </div>
+            """
+        )
+
+    html = f"""
+    <style>
+      #{card_id} .thinking-card-subhint {{
+        color: #64748b;
+        font-size: 0.72rem;
+        padding: 0.12rem 1rem 0;
+      }}
+      #{card_id} .tk-step-pending {{
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid transparent;
+        opacity: 0.34;
+      }}
+      #{card_id} .tk-step-status {{
+        gap: 0;
+        position: relative;
+      }}
+      #{card_id} .tk-status-spinner,
+      #{card_id} .tk-status-check {{
+        opacity: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }}
+      #{card_id} .tk-step-seq {{
+        animation: tk-step-seq-activate var(--tk-slot) ease forwards;
+        animation-delay: var(--tk-delay);
+      }}
+      #{card_id} .tk-step-hold {{
+        animation: tk-step-hold-activate 0.01s linear forwards;
+        animation-delay: var(--tk-delay);
+      }}
+      #{card_id} .tk-status-spinner-seq {{
+        animation: tk-status-spinner-phase var(--tk-slot) linear forwards;
+        animation-delay: var(--tk-delay);
+      }}
+      #{card_id} .tk-status-spinner-hold {{
+        animation: tk-status-spinner-hold 0.01s linear forwards;
+        animation-delay: var(--tk-delay);
+      }}
+      #{card_id} .tk-status-check {{
+        animation: tk-status-check-show 0.01s linear forwards;
+        animation-delay: calc(var(--tk-delay) + (var(--tk-slot) * 0.92));
+      }}
+      @keyframes tk-step-seq-activate {{
+        0% {{
+          opacity: 1;
+          background: rgba(99, 102, 241, 0.10);
+          border-color: rgba(99, 102, 241, 0.20);
+        }}
+        78% {{
+          opacity: 1;
+          background: rgba(99, 102, 241, 0.10);
+          border-color: rgba(99, 102, 241, 0.20);
+        }}
+        100% {{
+          opacity: 0.68;
+          background: rgba(255, 255, 255, 0.02);
+          border-color: transparent;
+        }}
+      }}
+      @keyframes tk-step-hold-activate {{
+        0% {{
+          opacity: 1;
+          background: rgba(99, 102, 241, 0.10);
+          border-color: rgba(99, 102, 241, 0.20);
+        }}
+        100% {{
+          opacity: 1;
+          background: rgba(99, 102, 241, 0.10);
+          border-color: rgba(99, 102, 241, 0.20);
+        }}
+      }}
+      @keyframes tk-status-spinner-phase {{
+        0% {{ opacity: 1; }}
+        82% {{ opacity: 1; }}
+        100% {{ opacity: 0; }}
+      }}
+      @keyframes tk-status-spinner-hold {{
+        0% {{ opacity: 1; }}
+        100% {{ opacity: 1; }}
+      }}
+      @keyframes tk-status-check-show {{
+        0% {{ opacity: 1; }}
+        100% {{ opacity: 1; }}
+      }}
+    </style>
+    <div class="thinking-card" id="{card_id}">
+      <div class="thinking-card-header">
+        <span class="thinking-card-mode">{escape(mode_label)}</span>
+        <span class="thinking-card-label">Đang xử lý câu hỏi</span>
+        <span class="thinking-dots"><span></span><span></span><span></span></span>
+      </div>
+      <div class="thinking-card-subhint">Bước đang sáng là bước hệ thống đang xử lý.</div>
+      <div class="thinking-card-steps">
+        {''.join(step_blocks)}
       </div>
     </div>
     """
