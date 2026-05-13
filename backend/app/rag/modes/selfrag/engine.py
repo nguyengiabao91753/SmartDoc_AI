@@ -54,7 +54,19 @@ class SelfRAGEngine(BaseRAGModeEngine):
                     "final_query": plan.question,
                     "confidence_score": fallback_confidence,
                     "evaluation_score": fallback_confidence,
-                    "trace": [{"attempt": 1, "query": plan.question, "next_action": "fallback"}],
+                    "trace": [
+                        {
+                            "attempt": 1,
+                            "query": plan.question,
+                            "doc_count": len(fallback_docs),
+                            "draft_answer": fallback_answer,
+                            "score": fallback_confidence,
+                            "confidence": fallback_confidence,
+                            "decision": "fallback",
+                            "reason": "Self-RAG fallback path was used after orchestration failure.",
+                            "next_action": "fallback",
+                        }
+                    ],
                 },
             )
 
@@ -110,6 +122,9 @@ class SelfRAGEngine(BaseRAGModeEngine):
                         "doc_count": len(current_docs),
                         "retrieval_quality": round(retrieval_eval.retrieval_quality, 4),
                         "relevance_score": round(retrieval_eval.relevance_score, 4),
+                        "retrieval_decision": retrieval_eval.decision,
+                        "retrieval_error_type": retrieval_eval.error_type,
+                        "retrieval_reason": retrieval_eval.rationale,
                         "retrieval_policy": retrieval_eval.policy_reason,
                     }
                 )
@@ -167,6 +182,7 @@ class SelfRAGEngine(BaseRAGModeEngine):
             attempt_trace.update(
                 {
                     "doc_count": len(current_docs),
+                    "draft_answer": last_answer,
                     "score": round(last_evaluation.score, 4),
                     "confidence": round(last_evaluation.confidence, 4),
                     "decision": last_evaluation.decision,

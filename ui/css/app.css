@@ -789,6 +789,34 @@ div[data-testid="stVerticalBlock"]:has(#landing-stage-flag):not(
 }
 
 /* ================================================================
+   DOCUMENT SCOPE FILTER
+   ================================================================ */
+.doc-scope-note {
+  margin: 0 0 0.45rem;
+  padding: 0.9rem 1rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(37, 99, 235, 0.12);
+  background: linear-gradient(
+    180deg,
+    rgba(239, 246, 255, 0.92) 0%,
+    rgba(255, 255, 255, 0.98) 100%
+  );
+}
+.doc-scope-title {
+  color: var(--brand);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-bottom: 0.28rem;
+}
+.doc-scope-subtitle {
+  color: var(--ink-3);
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+/* ================================================================
    EMPTY CHAT
    ================================================================ */
 .empty-chat-card {
@@ -954,6 +982,67 @@ div[data-testid="stChatMessage"] pre * {
 [data-testid="stExpander"] details [data-testid="stMarkdownContainer"],
 [data-testid="stExpander"] details [data-testid="stMarkdownContainer"] * {
   color: var(--ink) !important;
+}
+
+/* ================================================================
+   DOCUMENT HEADER (FIXED TOP)
+   ================================================================ */
+#document-header-anchor {
+  display: block;
+  height: 0;
+}
+
+#document-header-end {
+  display: block;
+  height: 0;
+}
+
+div[data-testid="stVerticalBlock"]:has(#document-header-anchor):not(
+    :has(div[data-testid="stVerticalBlock"] #document-header-anchor)
+  ) {
+  position: sticky;
+  top: 0;
+  z-index: 35;
+  box-sizing: border-box;
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(37, 99, 235, 0.12),
+      transparent 32%
+    ),
+    radial-gradient(
+      circle at left 18%,
+      rgba(14, 165, 233, 0.1),
+      transparent 24%
+    ),
+    linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+  border-bottom: 1px solid var(--border);
+  padding: 1.5rem 1rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+  max-height: 90vh;
+}
+
+div[data-testid="stVerticalBlock"]:has(#document-header-anchor):not(
+    :has(div[data-testid="stVerticalBlock"] #document-header-anchor)
+  ) > div {
+  gap: 1rem;
+}
+
+/* Target first few children within document header for better spacing */
+div[data-testid="stVerticalBlock"]:has(#document-header-anchor):not(
+    :has(div[data-testid="stVerticalBlock"] #document-header-anchor)
+  ) [data-testid="stMarkdownContainer"],
+div[data-testid="stVerticalBlock"]:has(#document-header-anchor):not(
+    :has(div[data-testid="stVerticalBlock"] #document-header-anchor)
+  ) [data-testid="stExpanderContainer"] {
+  margin-bottom: 0.75rem;
+}
+
+div[data-testid="stVerticalBlock"]:has(#document-header-anchor):not(
+    :has(div[data-testid="stVerticalBlock"] #document-header-anchor)
+  ) .stMultiSelect {
+  margin-bottom: 0.75rem;
 }
 
 /* ================================================================
@@ -1455,6 +1544,190 @@ div[data-testid="stVerticalBlock"]:has(#composer-anchor):not(
 }
 
 /* ================================================================
+   SELFRAG TRACE PANEL
+   ================================================================ */
+.selfrag-trace {
+  margin-bottom: 1rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.98) 0%,
+    rgba(248, 250, 252, 0.98) 100%
+  );
+  box-shadow: var(--sh-sm);
+  overflow: hidden;
+}
+.selfrag-trace-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.95rem 1rem 0.8rem;
+  border-bottom: 1px solid rgba(226, 232, 242, 0.85);
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.08), rgba(14, 165, 233, 0.04));
+}
+.selfrag-trace-kicker {
+  color: var(--brand);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.selfrag-trace-title {
+  margin-top: 0.2rem;
+  color: var(--ink);
+  font-size: 1rem;
+  font-weight: 700;
+}
+.selfrag-summary-chip {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.42rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+.selfrag-summary-chip-ok {
+  color: var(--success);
+  background: rgba(5, 150, 105, 0.1);
+}
+.selfrag-summary-chip-warn {
+  color: var(--warning);
+  background: rgba(245, 158, 11, 0.12);
+}
+.selfrag-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.7rem;
+  padding: 0.9rem 1rem 0.45rem;
+}
+.selfrag-summary-item {
+  padding: 0.78rem 0.82rem;
+  border-radius: var(--radius-md);
+  background: rgba(248, 250, 252, 0.92);
+  border: 1px solid rgba(226, 232, 242, 0.95);
+}
+.selfrag-summary-item strong {
+  display: block;
+  color: var(--ink);
+  font-size: 0.92rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.selfrag-summary-label {
+  display: block;
+  margin-bottom: 0.2rem;
+  color: var(--ink-3);
+  font-size: 0.74rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.selfrag-summary-note {
+  padding: 0 1rem 0.95rem;
+  color: var(--ink-3);
+  font-size: 0.84rem;
+  line-height: 1.6;
+}
+.selfrag-trace-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 0 1rem 1rem;
+}
+.selfrag-step-card {
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(226, 232, 242, 0.95);
+  background: #fff;
+  overflow: hidden;
+}
+.selfrag-step-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  padding: 0.72rem 0.85rem;
+  background: rgba(248, 250, 252, 0.95);
+  border-bottom: 1px solid rgba(226, 232, 242, 0.85);
+}
+.selfrag-step-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.24rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.1);
+  color: var(--brand);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+.selfrag-step-action {
+  color: var(--ink-3);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.selfrag-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.82rem 0.85rem;
+}
+.selfrag-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.selfrag-row-label {
+  color: var(--ink-3);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.selfrag-row-value {
+  color: var(--ink);
+  font-size: 0.86rem;
+  line-height: 1.6;
+}
+.selfrag-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.selfrag-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3rem 0.58rem;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--ink-2);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+.selfrag-answer-box {
+  padding: 0.78rem 0.82rem;
+  border-radius: var(--radius-md);
+  background: rgba(248, 250, 252, 0.95);
+  border: 1px dashed rgba(148, 163, 184, 0.45);
+}
+.selfrag-answer-label {
+  margin-bottom: 0.35rem;
+  color: var(--ink-3);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.selfrag-answer-content {
+  color: var(--ink);
+  font-size: 0.86rem;
+  line-height: 1.65;
+}
+
+/* ================================================================
    RESPONSIVE
    ================================================================ */
 @media (max-width: 1450px) {
@@ -1486,6 +1759,9 @@ div[data-testid="stVerticalBlock"]:has(#composer-anchor):not(
   }
   .landing-steps {
     grid-template-columns: 1fr;
+  }
+  .selfrag-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   div[data-testid="stVerticalBlock"]:has(#composer-anchor):not(
       :has(div[data-testid="stVerticalBlock"] #composer-anchor)
@@ -1561,6 +1837,12 @@ div[data-testid="stVerticalBlock"]:has(#composer-anchor):not(
   }
   .selected-file-name {
     max-width: 100%;
+  }
+  .selfrag-summary-grid {
+    grid-template-columns: 1fr;
+  }
+  .selfrag-trace-header {
+    flex-direction: column;
   }
   div[data-testid="stVerticalBlock"]:has(#landing-stage-flag):not(
       :has(div[data-testid="stVerticalBlock"] #landing-stage-flag)
@@ -1756,7 +2038,10 @@ div[data-testid="stVerticalBlock"]:has(#composer-anchor):not(
   }
 }
 
-#graphrag-build-flag { display:block; height:0; }
+#graphrag-build-flag {
+  display: block;
+  height: 0;
+}
 
 div[data-testid="stVerticalBlock"]:has(#graphrag-build-flag):not(:has(div[data-testid="stVerticalBlock"] #graphrag-build-flag))
   [data-testid="stButton"] > button[kind="primary"]{

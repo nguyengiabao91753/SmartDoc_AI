@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.core.logger import LOG
 from app.rag.conversation import build_conversation_history_context
 from app.rag.base import ModeNotImplementedError
+from app.rag.document_scope import resolve_document_scope
 from app.rag.models import RAGQueryRequest
 from app.rag.registry import AVAILABLE_RAG_MODES, build_engine_registry, normalize_rag_mode
 from app.services.database_service import db_service
@@ -68,14 +69,19 @@ class RAGService:
         conversation_history: str | None = None,
     ) -> Dict[str, Any]:
         engine = self.engines[rag_mode]
+        scope = resolve_document_scope(
+            document_id=document_id,
+            document_ids=document_ids,
+            session_id=session_id,
+        )
         result = engine.query(
             RAGQueryRequest(
                 question=question,
                 search_type=search_type,
                 top_k=top_k,
-                document_id=document_id,
-                document_ids=document_ids,
-                session_id=session_id,
+                document_id=scope.primary_document_id,
+                document_ids=scope.document_ids or None,
+                session_id=scope.session_id,
                 llm_model=llm_model,
                 conversation_history=conversation_history,
             )

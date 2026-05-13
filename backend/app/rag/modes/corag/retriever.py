@@ -6,6 +6,7 @@ import numpy as np
 from langchain_core.documents import Document
 
 from app.ai.retriever import get_retriever
+from app.rag.document_scope import resolve_document_scope
 from app.vectorstore.faiss_store import FaissStore
 
 from .planner import CoRAGPlan
@@ -38,13 +39,13 @@ class CoRAGRetriever:
         return merged, per_query_docs
 
     def _retrieve_one(self, query: str, plan: CoRAGPlan) -> List[Document]:
+        scope = resolve_document_scope(plan.document_id, plan.document_ids, plan.session_id)
         q_vector = self._embed_query(query)
-        filters = self._build_filters(plan.document_id, plan.document_ids, plan.session_id)
         retriever = get_retriever(
             self.store,
             search_type=plan.search_type,
             top_k=plan.top_k,
-            filters=filters,
+            filters=scope.to_metadata_filters(),
         )
         results = retriever.retrieve(query, q_vector)
         return self._results_to_documents(results)
@@ -56,27 +57,6 @@ class CoRAGRetriever:
         if norm > 0:
             q_vector = q_vector / norm
         return q_vector
-
-    def _build_filters(
-        self,
-        document_id: int | None,
-        document_ids: List[int] | None,
-        session_id: int | None,
-    ) -> Dict | None:
-        normalized_ids = [int(doc_id) for doc_id in (document_ids or []) if doc_id is not None]
-        if not normalized_ids and document_id is not None:
-            normalized_ids = [int(document_id)]
-
-        if normalized_ids:
-            unique_ids = sorted(set(normalized_ids))
-            if len(unique_ids) == 1:
-                return {"document_id": unique_ids[0]}
-            return {"document_id": {"$in": unique_ids}}
-
-        if session_id is not None:
-            return {"session_id": int(session_id)}
-
-        return None
 
     def _results_to_documents(self, results: List[Dict]) -> List[Document]:
         documents: List[Document] = []
