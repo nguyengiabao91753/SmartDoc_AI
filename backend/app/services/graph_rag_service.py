@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 
 from app.core.logger import LOG
 from app.core.config import settings
+from app.core.chunk_params import validate_chunk_params
 from app.services.detect_community_service import DetectCommunityService
 from app.services.document_graph_service import DocumentGraphService
 from app.services.document_service import DocumentService
@@ -73,7 +74,24 @@ class GraphRAGService:
         display_name = self._get_original_filename(os.path.basename(file_path))
         LOG.info("[GraphRAG] Building graph for doc_id=%s (%s)", doc_id_str, display_name)
 
-        langchain_docs = self.doc_service.load_document(file_path, document_id=document_id)
+        ui_chunk_size = getattr(settings, "UI_CHUNK_SIZE", None)
+        ui_chunk_overlap_sentences = getattr(settings, "UI_CHUNK_OVERLAP_SENTENCES", None)
+        resolved = validate_chunk_params(
+            chunk_size=ui_chunk_size if ui_chunk_size is not None else int(settings.CHUNK_SIZE),
+            chunk_overlap_sentences=(
+                ui_chunk_overlap_sentences
+                if ui_chunk_overlap_sentences is not None
+                else int(settings.OVERLAP_SENTENCES)
+            ),
+        )
+
+        langchain_docs = self.doc_service.load_document(
+            file_path,
+            document_id=document_id,
+            chunk_size=resolved.chunk_size,
+            chunk_overlap_sentences=resolved.chunk_overlap_sentences,
+        )
+
         if not langchain_docs:
             raise ValueError(f"Tai lieu '{display_name}' khong co noi dung de xay do thi")
 

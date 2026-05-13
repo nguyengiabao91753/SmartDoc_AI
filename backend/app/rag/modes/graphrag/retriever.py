@@ -6,7 +6,11 @@ from typing import Any, Dict, List
 
 import numpy as np
 from langchain_core.documents import Document
-from neo4j import GraphDatabase
+try:
+    from neo4j import GraphDatabase  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    GraphDatabase = None  # type: ignore
+
 
 from app.ai.retriever import get_retriever
 from app.core.config import settings
@@ -43,9 +47,14 @@ class GraphRAGRetriever:
     @property
     def driver(self):
         if self._driver is None:
+            if GraphDatabase is None:
+                raise ModuleNotFoundError(
+                    "neo4j package is not installed. Install it with: pip install neo4j"
+                )
             LOG.info("[Retriever] Connecting to Neo4j...")
             self._driver = GraphDatabase.driver(self._uri, auth=(self._user, self._password))
         return self._driver
+
 
     @property
     def reranker(self):

@@ -30,10 +30,16 @@ class Settings(BaseSettings):
     VECTOR_DIR: str = str(ROOT / "data" / "vectorstore")
     SQLITE_PATH: str = str(ROOT / "data" / "sqlite" / "chat.db")
 
-    # Chunking
+    # Chunking (defaults)
     CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", 500))
     CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", 200))
+
+    # In this codebase, chunk_overlap is implemented as overlap by sentence count.
     OVERLAP_SENTENCES: int = int(os.getenv("OVERLAP_SENTENCES", 2))
+
+    # UI-injectable chunk params (optional overrides). If None, fall back to defaults above.
+    UI_CHUNK_SIZE: int | None = None
+    UI_CHUNK_OVERLAP_SENTENCES: int | None = None
 
     # FAISS params
     TOP_K: int = int(os.getenv("TOP_K", 2))
