@@ -13,6 +13,7 @@ class RAGPlan:
     document_ids: List[int] | None = None
     session_id: int | None = None
     llm_model: str | None = None
+    conversation_history: str | None = None
 
 
 class RAGPlanner:
@@ -27,4 +28,5 @@ class RAGPlanner:
             document_ids=request.document_ids,
             session_id=request.session_id,
             llm_model=request.llm_model,
+            conversation_history=request.conversation_history,
         )

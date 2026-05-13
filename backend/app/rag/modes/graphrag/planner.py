@@ -23,6 +23,7 @@ class GraphRAGPlan:
     document_ids: Optional[List[int]] = None
     session_id: Optional[int] = None
     llm_model: Optional[str] = None
+    conversation_history: Optional[str] = None
 
 
 class GraphRAGPlanner:
@@ -35,7 +36,11 @@ class GraphRAGPlanner:
 
     def plan(self, request: RAGQueryRequest) -> GraphRAGPlan:
         LOG.info(f"[Planner] Question: '{request.question}'")
-        strategy = self._classify_intent(request.question, request.llm_model)
+        strategy = self._classify_intent(
+            request.question,
+            request.llm_model,
+            request.conversation_history,
+        )
 
         plan_obj = GraphRAGPlan(
             question=request.question,
@@ -46,11 +51,17 @@ class GraphRAGPlanner:
             document_ids=request.document_ids,
             session_id=request.session_id,
             llm_model=request.llm_model,
+            conversation_history=request.conversation_history,
         )
         LOG.info(f"[Planner] Selected strategy: {strategy}")
         return plan_obj
 
-    def _classify_intent(self, question: str, llm_model: str | None = None) -> str:
+    def _classify_intent(
+        self,
+        question: str,
+        llm_model: str | None = None,
+        conversation_history: str | None = None,
+    ) -> str:
         """
         Strategy classifier with robust fallback:
         1) quick heuristic
@@ -64,6 +75,7 @@ class GraphRAGPlanner:
             "Return JSON only, format: {\"strategy\":\"local\"} or {\"strategy\":\"global\"}.\n"
             "- local: specific entities, relations, fine-grained facts.\n"
             "- global: summaries, themes, trends, high-level synthesis.\n\n"
+            f"Conversation history:\n{conversation_history or '(none)'}\n\n"
             f"Question: {question}\n"
             "JSON:"
         )

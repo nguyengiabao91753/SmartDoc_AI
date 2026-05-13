@@ -22,6 +22,7 @@ class CoRAGResponder:
         source_documents: List[Document],
         per_query_docs: Dict[str, List[Document]] | None = None,
         llm_model: str | None = None,
+        conversation_history: str | None = None,
     ) -> str:
         if not source_documents:
             return "Không tìm thấy nội dung phù hợp trong tài liệu. Hãy thử lại với từ khóa khác."
@@ -46,6 +47,9 @@ QUY TẮC:
 
 HỆ THỐNG ĐÃ PHÂN TÍCH CÂU HỎI THÀNH {len(sub_queries)} KHÍA CẠNH:
 {sub_queries_text}
+
+NGỮ CẢNH HỘI THOẠI TRƯỚC:
+{conversation_history or '(không có)'}
 
 TÀI LIỆU THEO TỪNG KHÍA CẠNH:
 {context}

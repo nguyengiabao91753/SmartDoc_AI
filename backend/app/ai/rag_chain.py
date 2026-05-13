@@ -41,6 +41,7 @@ class SimpleRAGChain:
 
     def invoke(self, inputs: dict) -> dict:
         query = inputs.get("query", "")
+        conversation_history = str(inputs.get("conversation_history", "")).strip()
         source_documents = self._retrieve_documents(query)
         if not source_documents:
             return {
@@ -56,6 +57,7 @@ class SimpleRAGChain:
             "Chi tra loi dua tren phan NGU CANH. "
             "Tra loi bang cung ngon ngu voi cau hoi; neu cau hoi bang tieng Viet thi tra loi bang tieng Viet ro rang. "
             "Neu khong du thong tin, noi ro khong tim thay trong tai lieu.\n\n"
+            f"NGU CANH HOI THOAI TRUOC:\n{conversation_history or '(Khong co)'}\n\n"
             f"NGU CANH:\n{context}\n\n"
             f"CAU HOI:\n{query}\n\n"
             "TRA LOI:"

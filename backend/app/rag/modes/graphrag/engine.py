@@ -152,7 +152,8 @@ class GraphRAGEngine(BaseRAGModeEngine):
                 question=plan.question,
                 source_documents=source_documents,
                 llm_model=plan.llm_model,
-                strategy=plan.search_strategy
+                strategy=plan.search_strategy,
+                conversation_history=plan.conversation_history,
             )
             answer = ""
         else:
@@ -160,7 +161,8 @@ class GraphRAGEngine(BaseRAGModeEngine):
                 question=plan.question,
                 source_documents=source_documents,
                 llm_model=plan.llm_model,
-                strategy=plan.search_strategy  # Truyền thêm strategy để responder biết cách format prompt
+                strategy=plan.search_strategy,  # Truyền thêm strategy để responder biết cách format prompt
+                conversation_history=plan.conversation_history,
             )
             answer_generator = None
 
