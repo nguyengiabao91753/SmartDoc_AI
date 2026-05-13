@@ -98,6 +98,7 @@ def init_state():
         "scroll_to_bottom_nonce": 0,
         "scroll_applied_nonce": 0,
         "corag_metadata_by_session": {},
+        "selfrag_metadata_by_session": {},
         "processing_graph": None,
         "initializing_graph": False,
         "_do_graph_load": False, 
@@ -298,6 +299,9 @@ def remove_session(session_id: int, rag: RAGService | None = None):
 
     st.session_state.latest_sources_by_session.pop(session_id, None)
     st.session_state.corag_metadata_by_session.pop(session_id, None)
+    st.session_state.selfrag_metadata_by_session.pop(session_id, None)
+    st.session_state.pop(get_document_selection_key(session_id), None)
+    st.session_state.pop(get_document_selection_catalog_key(session_id), None)
 
     # Clean UI state
     st.session_state.editing_session_id = None
@@ -426,6 +430,78 @@ def get_session_document_ids(active_session: dict | None) -> list[int]:
         return []
     raw_ids = active_session.get("document_ids") or []
     return [int(doc_id) for doc_id in raw_ids if doc_id is not None]
+
+
+def get_document_selection_key(session_id: int) -> str:
+    return f"selected_document_ids_{session_id}"
+
+
+def get_document_selection_catalog_key(session_id: int) -> str:
+    return f"selected_document_catalog_{session_id}"
+
+
+def sync_selected_document_ids(active_session: dict | None) -> list[int]:
+    if not active_session:
+        return []
+
+    session_id = active_session["id"]
+    available_ids = get_session_document_ids(active_session)
+    selection_key = get_document_selection_key(session_id)
+    catalog_key = get_document_selection_catalog_key(session_id)
+    previous_available_ids = st.session_state.get(catalog_key)
+    raw_selection = st.session_state.get(selection_key)
+
+    normalized_selection: list[int] = []
+    seen_ids: set[int] = set()
+    for raw_value in raw_selection or []:
+        try:
+            resolved_id = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if resolved_id not in available_ids or resolved_id in seen_ids:
+            continue
+        seen_ids.add(resolved_id)
+        normalized_selection.append(resolved_id)
+
+    had_full_previous_selection = (
+        raw_selection is not None
+        and previous_available_ids is not None
+        and list(previous_available_ids) == list(raw_selection)
+    )
+    if raw_selection is None:
+        normalized_selection = list(available_ids)
+    elif had_full_previous_selection and normalized_selection == list(previous_available_ids):
+        normalized_selection = list(available_ids)
+    elif raw_selection and not normalized_selection:
+        normalized_selection = list(available_ids)
+
+    st.session_state[selection_key] = normalized_selection
+    st.session_state[catalog_key] = list(available_ids)
+    return normalized_selection
+
+
+def get_selected_document_ids(active_session: dict | None) -> list[int]:
+    return sync_selected_document_ids(active_session)
+
+
+def get_selected_document_id(active_session: dict | None) -> int | None:
+    if not active_session:
+        return None
+
+    selected_ids = get_selected_document_ids(active_session)
+    if len(selected_ids) == 1:
+        return selected_ids[0]
+
+    primary_document_id = active_session.get("document_id")
+    try:
+        primary_document_id = int(primary_document_id) if primary_document_id is not None else None
+    except (TypeError, ValueError):
+        primary_document_id = None
+
+    if primary_document_id in selected_ids:
+        return primary_document_id
+
+    return selected_ids[0] if selected_ids else None
 
 
 def session_has_documents(active_session: dict | None) -> bool:
@@ -593,11 +669,11 @@ def process_pending_upload(rag: RAGService | None):
 
 
 def queue_query(prompt: str, active_session: dict | None, rerun: bool = True):
-    document_ids = get_session_document_ids(active_session)
+    document_ids = get_selected_document_ids(active_session)
     if active_session is None or not document_ids:
         st.session_state.flash_message = {
             "type": "warning",
-            "text": "Hãy upload tài liệu vào đoạn chat này trước khi đặt câu hỏi.",
+            "text": "Hãy chọn ít nhất một tài liệu trong session này trước khi đặt câu hỏi.",
         }
         if rerun:
             st.rerun()
@@ -613,7 +689,7 @@ def queue_query(prompt: str, active_session: dict | None, rerun: bool = True):
 
     st.session_state.queued_query = {
         "session_id": active_session["id"],
-        "document_id": active_session.get("document_id"),
+        "document_id": get_selected_document_id(active_session),
         "document_ids": document_ids,
         "prompt": prompt,
         "rag_mode": rag_mode,
@@ -681,8 +757,18 @@ def process_pending_query(rag: RAGService | None):
     session_id = payload["session_id"]
     if "corag_metadata_by_session" not in st.session_state:
         st.session_state.corag_metadata_by_session = {}
+    if "selfrag_metadata_by_session" not in st.session_state:
+        st.session_state.selfrag_metadata_by_session = {}
     rag_mode = payload.get("rag_mode", "rag")
     metadata = result.get("metadata", {})
+    session_snapshot = db_service.get_chat_session(session_id)
+    session_documents = session_snapshot.get("documents", []) if session_snapshot else []
+    document_name_by_id = {
+        int(document["id"]): str(document.get("filename") or f"Tài liệu {document['id']}")
+        for document in session_documents
+        if document.get("id") is not None
+    }
+
     if rag_mode == "corag" and metadata.get("sub_queries"):
         st.session_state.corag_metadata_by_session[session_id] = {
             "sub_queries": metadata.get("sub_queries", []),
@@ -692,6 +778,36 @@ def process_pending_query(rag: RAGService | None):
         }
     else:
         st.session_state.corag_metadata_by_session.pop(session_id, None)
+
+    if rag_mode == "selfrag" and metadata.get("trace"):
+        selected_document_ids = [
+            int(document_id)
+            for document_id in (payload.get("document_ids") or [])
+            if document_id is not None
+        ]
+        st.session_state.selfrag_metadata_by_session[session_id] = {
+            "question": payload["prompt"],
+            "final_query": metadata.get("final_query"),
+            "query_history": metadata.get("query_history", []),
+            "accepted": metadata.get("accepted", False),
+            "attempts": metadata.get("attempts", 0),
+            "confidence_score": metadata.get("confidence_score", 0.0),
+            "evaluation_score": metadata.get("evaluation_score", 0.0),
+            "confidence_threshold": metadata.get("confidence_threshold"),
+            "min_confidence_threshold": metadata.get("min_confidence_threshold"),
+            "error_type": metadata.get("error_type"),
+            "evaluation_reason": metadata.get("evaluation_reason"),
+            "policy_reason": metadata.get("policy_reason"),
+            "trace": metadata.get("trace", []),
+            "selected_document_ids": selected_document_ids,
+            "selected_document_names": [
+                document_name_by_id[document_id]
+                for document_id in selected_document_ids
+                if document_id in document_name_by_id
+            ],
+        }
+    else:
+        st.session_state.selfrag_metadata_by_session.pop(session_id, None)
 
     st.session_state.processing_query = None
     schedule_bottom_scroll()
@@ -1060,6 +1176,184 @@ def render_corag_steps(active_session_id: int | None, is_last_assistant: bool):
     st.html(steps_html)
 
 
+def render_selfrag_trace(active_session_id: int | None, is_last_assistant: bool):
+    if not is_last_assistant or active_session_id is None:
+        return
+
+    meta = st.session_state.get("selfrag_metadata_by_session", {}).get(active_session_id)
+    if not meta or not meta.get("trace"):
+        return
+
+    def _to_percent(value) -> str:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            numeric = 0.0
+        return f"{int(round(max(0.0, min(1.0, numeric)) * 100))}%"
+
+    def _format_decimal(value) -> str:
+        try:
+            return f"{float(value):.2f}"
+        except (TypeError, ValueError):
+            return "-"
+
+    def _to_html(text: object) -> str:
+        return escape(str(text or "")).replace("\n", "<br>")
+
+    action_labels = {
+        "accept": "Đạt ngưỡng",
+        "rewrite": "Viết lại truy vấn",
+        "rewrite_before_generate": "Viết lại trước khi trả lời",
+        "multi_hop": "Truy xuất bổ sung",
+        "regenerate": "Sinh lại câu trả lời",
+        "return_last_answer": "Giữ câu trả lời hiện tại",
+        "early_stop_stagnation": "Dừng sớm do điểm không cải thiện",
+        "early_stop_no_evidence": "Dừng do không đủ bằng chứng",
+        "early_stop_no_new_evidence": "Dừng do không có bằng chứng mới",
+        "fallback": "Dùng luồng dự phòng",
+    }
+    retrieval_labels = {
+        "proceed": "Tiếp tục trả lời",
+        "rewrite": "Cần viết lại truy vấn",
+    }
+
+    selected_document_names = meta.get("selected_document_names") or []
+    selected_scope_text = (
+        " | ".join(selected_document_names[:3]) + (f" | ... (+{len(selected_document_names) - 3})" if len(selected_document_names) > 3 else "")
+        if selected_document_names
+        else "Toàn bộ tài liệu trong session"
+    )
+    accepted = bool(meta.get("accepted"))
+    status_label = "Đạt ngưỡng" if accepted else "Cần làm lại"
+
+    attempt_blocks: list[str] = []
+    for attempt in meta.get("trace", []):
+        detail_rows: list[str] = []
+        detail_rows.append(
+            f"""
+            <div class="selfrag-row">
+                <span class="selfrag-row-label">Truy vấn</span>
+                <span class="selfrag-row-value">{_to_html(attempt.get("query") or meta.get("question"))}</span>
+            </div>
+            """
+        )
+
+        doc_count = attempt.get("doc_count")
+        if doc_count is not None:
+            detail_rows.append(
+                f"""
+                <div class="selfrag-chip-row">
+                    <span class="selfrag-chip">Nguồn: {escape(str(doc_count))}</span>
+                    <span class="selfrag-chip">Retrieval: {_format_decimal(attempt.get("retrieval_quality"))}</span>
+                    <span class="selfrag-chip">Relevance: {_format_decimal(attempt.get("relevance_score"))}</span>
+                    <span class="selfrag-chip">Retrieval decision: {escape(retrieval_labels.get(str(attempt.get("retrieval_decision") or ""), str(attempt.get("retrieval_decision") or "-")))}</span>
+                </div>
+                """
+            )
+
+        if attempt.get("draft_answer"):
+            detail_rows.append(
+                f"""
+                <div class="selfrag-answer-box">
+                    <div class="selfrag-answer-label">Câu trả lời ở bước này</div>
+                    <div class="selfrag-answer-content">{_to_html(attempt.get("draft_answer"))}</div>
+                </div>
+                """
+            )
+
+        if attempt.get("score") is not None or attempt.get("confidence") is not None:
+            detail_rows.append(
+                f"""
+                <div class="selfrag-chip-row">
+                    <span class="selfrag-chip">Score: {_format_decimal(attempt.get("score"))}</span>
+                    <span class="selfrag-chip">Confidence: {_to_percent(attempt.get("confidence"))}</span>
+                    <span class="selfrag-chip">Threshold: {_format_decimal(attempt.get("effective_threshold"))}</span>
+                    <span class="selfrag-chip">Decision: {escape(action_labels.get(str(attempt.get("decision") or ""), str(attempt.get("decision") or "-")))}</span>
+                </div>
+                """
+            )
+
+        reason_text = attempt.get("reason") or attempt.get("retrieval_reason")
+        if reason_text:
+            detail_rows.append(
+                f"""
+                <div class="selfrag-row">
+                    <span class="selfrag-row-label">Đánh giá</span>
+                    <span class="selfrag-row-value">{_to_html(reason_text)}</span>
+                </div>
+                """
+            )
+
+        if attempt.get("rewritten_query"):
+            detail_rows.append(
+                f"""
+                <div class="selfrag-row">
+                    <span class="selfrag-row-label">Query mới</span>
+                    <span class="selfrag-row-value">{_to_html(attempt.get("rewritten_query"))}</span>
+                </div>
+                """
+            )
+
+        if attempt.get("follow_up_query"):
+            detail_rows.append(
+                f"""
+                <div class="selfrag-row">
+                    <span class="selfrag-row-label">Multi-hop query</span>
+                    <span class="selfrag-row-value">{_to_html(attempt.get("follow_up_query"))}</span>
+                </div>
+                """
+            )
+
+        attempt_blocks.append(
+            f"""
+            <div class="selfrag-step-card">
+                <div class="selfrag-step-header">
+                    <span class="selfrag-step-badge">Lần {escape(str(attempt.get("attempt") or "?"))}</span>
+                    <span class="selfrag-step-action">{escape(action_labels.get(str(attempt.get("next_action") or ""), str(attempt.get("next_action") or "-")))}</span>
+                </div>
+                <div class="selfrag-step-body">
+                    {''.join(detail_rows)}
+                </div>
+            </div>
+            """
+        )
+
+    html = f"""
+    <div class="selfrag-trace">
+        <div class="selfrag-trace-header">
+            <div>
+                <div class="selfrag-trace-kicker">Self-RAG · Chi tiết từng bước</div>
+                <div class="selfrag-trace-title">{status_label}</div>
+            </div>
+            <div class="selfrag-summary-chip {'selfrag-summary-chip-ok' if accepted else 'selfrag-summary-chip-warn'}">{status_label}</div>
+        </div>
+        <div class="selfrag-summary-grid">
+            <div class="selfrag-summary-item">
+                <span class="selfrag-summary-label">Điểm đánh giá</span>
+                <strong>{_format_decimal(meta.get("evaluation_score"))}</strong>
+            </div>
+            <div class="selfrag-summary-item">
+                <span class="selfrag-summary-label">Độ tin cậy</span>
+                <strong>{_to_percent(meta.get("confidence_score"))}</strong>
+            </div>
+            <div class="selfrag-summary-item">
+                <span class="selfrag-summary-label">Số vòng</span>
+                <strong>{escape(str(meta.get("attempts") or len(meta.get("trace", []))))}</strong>
+            </div>
+            <div class="selfrag-summary-item">
+                <span class="selfrag-summary-label">Phạm vi tài liệu</span>
+                <strong>{escape(selected_scope_text)}</strong>
+            </div>
+        </div>
+        <div class="selfrag-summary-note">{_to_html(meta.get("evaluation_reason") or "")}</div>
+        <div class="selfrag-trace-steps">
+            {''.join(attempt_blocks)}
+        </div>
+    </div>
+    """
+    st.html(html)
+
+
 def render_thinking_card(rag_mode: str = "rag"):
     """Hiển thị thinking card với các bước xử lý theo từng mode."""
 
@@ -1321,6 +1615,7 @@ def render_chat_history(active_session: dict | None):
             else:
                 is_last_assistant = (idx == last_assistant_idx)
                 render_corag_steps(active_session["id"] if active_session else None, is_last_assistant)
+                render_selfrag_trace(active_session["id"] if active_session else None, is_last_assistant)
                 st.markdown(message["content"], unsafe_allow_html=True)
 
 
@@ -1422,6 +1717,7 @@ def render_document_pill(active_session: dict | None):
     else:
         display_name = " | ".join(doc_names[:3]) + f" | ... (+{len(doc_names) - 3})"
 
+    st.markdown('<div id="document-header-anchor"></div>', unsafe_allow_html=True)
     st.markdown(
         f"""
         <div class="document-pill">
@@ -1431,6 +1727,56 @@ def render_document_pill(active_session: dict | None):
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_document_scope_filter(active_session: dict | None):
+    if not active_session:
+        return
+
+    documents = active_session.get("documents") or []
+    if len(documents) < 2:
+        return
+
+    selection_key = get_document_selection_key(active_session["id"])
+    sync_selected_document_ids(active_session)
+    label_by_id = {
+        int(document["id"]): str(document.get("filename") or f"Tài liệu {document['id']}")
+        for document in documents
+        if document.get("id") is not None
+    }
+    available_ids = list(label_by_id.keys())
+
+    st.markdown(
+        """
+        <div class="doc-scope-note">
+            <div class="doc-scope-title">Phạm vi tài liệu xử lý</div>
+            <div class="doc-scope-subtitle">
+                Mặc định hệ thống dùng toàn bộ tài liệu trong đoạn chat. Bạn có thể bỏ chọn để chỉ xử lý những tài liệu cần thiết.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.multiselect(
+        "Chọn tài liệu để dùng cho câu trả lời",
+        options=available_ids,
+        format_func=lambda doc_id: label_by_id.get(doc_id, f"Tài liệu {doc_id}"),
+        key=selection_key,
+        disabled=is_busy(),
+        placeholder="Chọn ít nhất 1 tài liệu",
+    )
+
+    current_selected = st.session_state.get(selection_key) or []
+    if not current_selected:
+        st.caption("Chọn ít nhất 1 tài liệu trước khi gửi câu hỏi.")
+        return
+
+    if len(current_selected) == len(available_ids):
+        st.caption(f"Đang xử lý toàn bộ {len(available_ids)} tài liệu trong session này.")
+    else:
+        st.caption(
+            f"Đang xử lý {len(current_selected)}/{len(available_ids)} tài liệu đã chọn."
+        )
 
 
 def render_inline_upload_for_session(rag: RAGService | None, active_session: dict | None):
@@ -1455,6 +1801,8 @@ def render_inline_upload_for_session(rag: RAGService | None, active_session: dic
             disabled=len(selected_files) == 0 or rag is None or is_busy(),
         ):
             queue_document_upload(rag, selected_files, active_session)
+    
+    st.markdown('<div id="document-header-end"></div>', unsafe_allow_html=True)
 
 
 def render_composer(active_session: dict | None):
@@ -1603,6 +1951,7 @@ def render_main_area(rag: RAGService | None, active_session: dict | None):
             st.markdown('<div id="chat-stage-flag"></div>', unsafe_allow_html=True)
             
             render_document_pill(active_session)
+            render_document_scope_filter(active_session)
             render_inline_upload_for_session(rag, active_session)
             render_success_card(active_session)
             

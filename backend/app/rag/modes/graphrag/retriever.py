@@ -15,6 +15,7 @@ except ModuleNotFoundError:  # pragma: no cover
 from app.ai.retriever import get_retriever
 from app.core.config import settings
 from app.core.logger import LOG
+from app.rag.document_scope import resolve_document_scope
 from app.rag.modes.graphrag.planner import GraphRAGPlan
 
 
@@ -83,28 +84,13 @@ class GraphRAGRetriever:
 
     @staticmethod
     def _build_faiss_filters(plan: GraphRAGPlan) -> Dict[str, Any] | None:
-        normalized_ids = [int(doc_id) for doc_id in (plan.document_ids or []) if doc_id is not None]
-        if not normalized_ids and plan.document_id is not None:
-            normalized_ids = [int(plan.document_id)]
-
-        if normalized_ids:
-            unique_ids = sorted(set(normalized_ids))
-            if len(unique_ids) == 1:
-                return {"document_id": unique_ids[0]}
-            return {"document_id": {"$in": unique_ids}}
-
-        if plan.session_id is not None:
-            return {"session_id": int(plan.session_id)}
-
-        return None
+        scope = resolve_document_scope(plan.document_id, plan.document_ids, plan.session_id)
+        return scope.to_metadata_filters()
 
     @staticmethod
     def _normalize_doc_filters(plan: GraphRAGPlan) -> List[str]:
-        normalized_ids = [str(int(doc_id)) for doc_id in (plan.document_ids or []) if doc_id is not None]
-        if not normalized_ids and plan.document_id is not None:
-            normalized_ids = [str(int(plan.document_id))]
-        # Preserve deterministic order and remove duplicates.
-        return sorted(set(normalized_ids))
+        scope = resolve_document_scope(plan.document_id, plan.document_ids, plan.session_id)
+        return scope.to_graph_document_ids()
 
     def retrieve(self, plan: GraphRAGPlan) -> List[Document]:
         LOG.info(
