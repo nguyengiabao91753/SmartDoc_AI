@@ -73,7 +73,7 @@ class GraphRAGService:
         display_name = self._get_original_filename(os.path.basename(file_path))
         LOG.info("[GraphRAG] Building graph for doc_id=%s (%s)", doc_id_str, display_name)
 
-        langchain_docs = self.doc_service.load_document(file_path)
+        langchain_docs = self.doc_service.load_document(file_path, document_id=document_id)
         if not langchain_docs:
             raise ValueError(f"Tai lieu '{display_name}' khong co noi dung de xay do thi")
 
@@ -118,6 +118,9 @@ class GraphRAGService:
         if not document_ids:
             return False
         return all(self.is_document_indexed(int(doc_id)) for doc_id in document_ids)
+
+    def delete_documents(self, document_ids: List[int]) -> Dict[str, int]:
+        return self.kg_service.delete_documents(document_ids)
 
     def get_new_files(self) -> List[str]:
         doc_dir = settings.DOCUMENT_DIR

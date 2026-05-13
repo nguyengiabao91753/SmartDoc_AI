@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import sys
 from datetime import datetime
 from html import escape
@@ -260,12 +261,35 @@ def commit_session_rename(session_id: int):
     st.session_state.open_session_menu_id = None
 
 
-def remove_session(session_id: int):
+def remove_session(session_id: int, rag: RAGService | None = None):
     if is_busy():
         return
 
-    db_service.delete_chat_session(session_id)
+    cleanup_errors: list[str] = []
+    delete_result = db_service.delete_chat_session(session_id)
+    deleted_documents = delete_result.get("deleted_documents", [])
+    deleted_document_ids = [int(document["id"]) for document in deleted_documents if document.get("id") is not None]
+
+    if rag is not None:
+        vector_result = rag.delete_documents(deleted_document_ids, session_id=session_id)
+        if vector_result.get("status") != "success":
+            cleanup_errors.append("vectorstore")
+
+    try:
+        if not cleanup_deleted_graph_documents(deleted_document_ids, session_id, rag):
+            cleanup_errors.append("graph")
+    except Exception as exc:
+        LOG.warning("Graph cleanup failed while deleting session %s: %s", session_id, exc)
+        cleanup_errors.append("graph")
+
+    try:
+        cleanup_deleted_document_files(deleted_documents)
+    except Exception as exc:
+        LOG.warning("File cleanup failed while deleting session %s: %s", session_id, exc)
+        cleanup_errors.append("file")
+
     st.session_state.latest_sources_by_session.pop(session_id, None)
+    st.session_state.corag_metadata_by_session.pop(session_id, None)
 
     # Clean UI state
     st.session_state.editing_session_id = None
@@ -280,7 +304,15 @@ def remove_session(session_id: int):
     st.session_state.composer_prompt = ""
     st.session_state.draft_session = True
 
-    st.session_state.flash_message = {"type": "success", "text": "Đã xóa đoạn chat khỏi lịch sử!"}
+    if cleanup_errors:
+        st.session_state.flash_message = {
+            "type": "warning",
+            "text": "Đã xóa đoạn chat khỏi lịch sử, nhưng một phần dữ liệu phụ chưa dọn xong. Xem log để kiểm tra.",
+        }
+    elif delete_result.get("deleted"):
+        st.session_state.flash_message = {"type": "success", "text": "Đã xóa đoạn chat và toàn bộ dữ liệu liên quan!"}
+    else:
+        st.session_state.flash_message = {"type": "warning", "text": "Đoạn chat này không còn tồn tại."}
 
 def sanitize_filename(filename: str) -> str:
     stem = Path(filename).stem
@@ -298,6 +330,87 @@ def save_uploaded_bytes(filename: str, content: bytes) -> str:
     with open(saved_path, "wb") as file_handle:
         file_handle.write(content)
     return saved_path
+
+
+def is_path_inside(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def remove_file_if_safe(path_value: str | None, root: Path):
+    if not path_value:
+        return
+    raw_path = Path(path_value)
+    target = raw_path.resolve() if raw_path.is_absolute() else (root / raw_path).resolve()
+    root = root.resolve()
+    if target.exists() and target.is_file() and is_path_inside(target, root):
+        target.unlink()
+
+
+def remove_dir_if_safe(path_value: Path, root: Path):
+    target = path_value.resolve()
+    root = root.resolve()
+    if target.exists() and target.is_dir() and is_path_inside(target, root):
+        shutil.rmtree(target)
+
+
+def cleanup_deleted_document_files(deleted_documents: list[dict]):
+    data_root = Path(settings.DATA_DIR).resolve()
+    images_root = (data_root / "images").resolve()
+    document_root = Path(settings.DOCUMENT_DIR).resolve()
+
+    for document in deleted_documents:
+        document_id = document.get("id")
+        for image_path in document.get("image_paths") or []:
+            remove_file_if_safe(image_path, data_root)
+
+        if document_id is not None:
+            remove_dir_if_safe(images_root / f"doc_{int(document_id)}", images_root)
+
+        remove_file_if_safe(document.get("filepath"), document_root)
+
+
+def cleanup_deleted_graph_documents(document_ids: list[int], session_id: int, rag: RAGService | None = None) -> bool:
+    if not document_ids:
+        return True
+
+    cleanup_ok = True
+    graph_service = st.session_state.get("_graph_svc_instance")
+    if graph_service is None:
+        neo4j_uri = str(getattr(settings, "NEO4J_URI", "") or "").strip()
+        if neo4j_uri and neo4j_uri.lower() != "none" and rag is not None:
+            kg_service = None
+            try:
+                from app.services.knowledge_graph_service import KnowledgeGraphService
+
+                kg_service = KnowledgeGraphService(
+                    embedding_service=rag.embedding_service,
+                    setup_indexes=False,
+                )
+                kg_service.delete_documents(document_ids)
+            except Exception as exc:
+                LOG.warning("Graph cleanup skipped because KnowledgeGraphService is unavailable: %s", exc)
+                cleanup_ok = False
+            finally:
+                if kg_service is not None:
+                    kg_service.close()
+            graph_service = None
+
+    if graph_service is not None:
+        try:
+            graph_service.delete_documents(document_ids)
+        except Exception as exc:
+            LOG.warning("Graph cleanup failed for document_ids=%s: %s", document_ids, exc)
+            cleanup_ok = False
+
+    for key in list(st.session_state.keys()):
+        if key == f"graph_session_ready_{session_id}" or key.startswith(f"graph_indexed_{session_id}_"):
+            st.session_state.pop(key, None)
+
+    return cleanup_ok
 
 
 def get_session_document_ids(active_session: dict | None) -> list[int]:
@@ -604,7 +717,7 @@ def process_pending_graph_build(placeholder=None):
     st.rerun()
 
 
-def render_sidebar(sessions):
+def render_sidebar(sessions, rag: RAGService | None = None):
     with st.sidebar:
         st.markdown('<div class="sidebar-title">Lịch sử hội thoại</div>', unsafe_allow_html=True)
         st.button(
@@ -692,7 +805,7 @@ def render_sidebar(sessions):
                         key=f"menu_delete_{session_id}",
                         use_container_width=True,
                         on_click=remove_session,
-                        args=(session_id,)
+                        args=(session_id, rag)
                     )
 
 def render_processing_card(file_name: str):
@@ -1056,7 +1169,34 @@ def render_sources(active_session_id: int | None):
     for index, source in enumerate(sources, start=1):
         title = _build_source_title(index, source)
         with st.expander(title):
+            # Show main content
             st.write(source["content"])
+
+            # Show images if available
+            image_paths = source.get("image_paths", [])
+            has_ocr = source.get("has_ocr", False)
+
+            if image_paths or has_ocr:
+                st.divider()
+                col1, col2 = st.columns([1, 4])
+                with col1:
+                    if has_ocr:
+                        st.caption("🖼️ OCR")
+                with col2:
+                    st.caption("Văn bản được trích xuất từ ảnh tài liệu")
+
+            # Display images if they exist
+            if image_paths:
+                for img_path in image_paths:
+                    if isinstance(img_path, str):
+                        full_path = os.path.join(settings.DATA_DIR, img_path)
+                        if os.path.exists(full_path):
+                            try:
+                                st.image(full_path, width="stretch")
+                            except Exception as e:
+                                st.warning(f"Không thể tải ảnh: {e}")
+                        else:
+                            st.warning(f"Ảnh không tìm thấy: {img_path}")
 
 
 def render_document_pill(active_session: dict | None):
@@ -1317,7 +1457,7 @@ def main():
     with top_placeholder.container():
         show_flash_message()
 
-    render_sidebar(sessions)
+    render_sidebar(sessions, rag)
     
     graph_action_ph = render_main_area(rag, active_session)  
     apply_scheduled_bottom_scroll()

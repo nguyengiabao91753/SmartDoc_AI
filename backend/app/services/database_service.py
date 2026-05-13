@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from typing import Any, Dict, List
+import json
 
 from app.core.logger import LOG
 from app.database.sqlite_db import get_conn, init_db
@@ -52,6 +53,110 @@ class DatabaseService:
         conn.close()
         LOG.info("Deleted document %s from DB", document_id)
 
+    @staticmethod
+    def _parse_image_paths(raw_value: Any) -> List[str]:
+        if not raw_value:
+            return []
+        try:
+            parsed = json.loads(raw_value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        if not isinstance(parsed, list):
+            return []
+        return [path for path in parsed if isinstance(path, str) and path.strip()]
+
+    def _get_related_documents_for_session(self, cur, session_id: int) -> List[Dict[str, Any]]:
+        cur.execute(
+            """
+            WITH related_doc_ids AS (
+                SELECT document_id
+                FROM session_documents
+                WHERE session_id = ?
+
+                UNION
+
+                SELECT document_id
+                FROM chat_sessions
+                WHERE id = ? AND document_id IS NOT NULL
+
+                UNION
+
+                SELECT document_id
+                FROM chat_history
+                WHERE session_id = ? AND document_id IS NOT NULL
+            )
+            SELECT DISTINCT d.id, d.filename, d.filepath
+            FROM documents d
+            JOIN related_doc_ids r ON r.document_id = d.id
+            ORDER BY d.id ASC
+            """,
+            (session_id, session_id, session_id),
+        )
+        documents = [dict(row) for row in cur.fetchall()]
+        if not documents:
+            return []
+
+        doc_ids = [document["id"] for document in documents]
+        placeholders = ",".join(["?"] * len(doc_ids))
+        cur.execute(
+            f"""
+            SELECT document_id, image_paths
+            FROM chunks
+            WHERE document_id IN ({placeholders})
+            """,
+            tuple(doc_ids),
+        )
+
+        image_paths_by_doc: Dict[int, List[str]] = {int(doc_id): [] for doc_id in doc_ids}
+        for row in cur.fetchall():
+            document_id = int(row["document_id"])
+            image_paths_by_doc.setdefault(document_id, []).extend(
+                self._parse_image_paths(row["image_paths"])
+            )
+
+        for document in documents:
+            image_paths = image_paths_by_doc.get(int(document["id"]), [])
+            document["image_paths"] = sorted(set(image_paths))
+
+        return documents
+
+    def _document_has_refs_outside_session(self, cur, document_id: int, session_id: int) -> bool:
+        cur.execute(
+            """
+            SELECT
+                (
+                    SELECT COUNT(*)
+                    FROM session_documents
+                    WHERE document_id = ? AND session_id <> ?
+                )
+                +
+                (
+                    SELECT COUNT(*)
+                    FROM chat_sessions
+                    WHERE document_id = ? AND id <> ?
+                )
+                +
+                (
+                    SELECT COUNT(*)
+                    FROM chat_history
+                    WHERE document_id = ? AND session_id IS NOT NULL AND session_id <> ?
+                ) AS ref_count
+            """,
+            (document_id, session_id, document_id, session_id, document_id, session_id),
+        )
+        row = cur.fetchone()
+        return bool(row and int(row["ref_count"] or 0) > 0)
+
+    @staticmethod
+    def _delete_rows_by_document_ids(cur, table_name: str, document_ids: List[int]):
+        if not document_ids:
+            return
+        placeholders = ",".join(["?"] * len(document_ids))
+        cur.execute(
+            f"DELETE FROM {table_name} WHERE document_id IN ({placeholders})",
+            tuple(document_ids),
+        )
+
     def create_chat_session(self, title: str, document_id: int | None = None) -> int:
         session_title = (title or "New chat").strip() or "New chat"
         conn = get_conn()
@@ -93,15 +198,57 @@ class DatabaseService:
         conn.close()
         LOG.info("Renamed chat session %s to '%s'", session_id, session_title)
 
-    def delete_chat_session(self, session_id: int):
+    def delete_chat_session(self, session_id: int) -> Dict[str, Any]:
         conn = get_conn()
         cur = conn.cursor()
+        cur.execute("SELECT id FROM chat_sessions WHERE id = ?", (session_id,))
+        session_exists = cur.fetchone() is not None
+        if not session_exists:
+            conn.close()
+            return {
+                "session_id": session_id,
+                "deleted": False,
+                "deleted_documents": [],
+                "retained_documents": [],
+            }
+
+        related_documents = self._get_related_documents_for_session(cur, session_id)
+        deleted_documents: List[Dict[str, Any]] = []
+        retained_documents: List[Dict[str, Any]] = []
+        for document in related_documents:
+            document_id = int(document["id"])
+            if self._document_has_refs_outside_session(cur, document_id, session_id):
+                retained_documents.append(document)
+            else:
+                deleted_documents.append(document)
+
+        deleted_document_ids = [int(document["id"]) for document in deleted_documents]
+
         cur.execute("DELETE FROM chat_history WHERE session_id = ?", (session_id,))
         cur.execute("DELETE FROM session_documents WHERE session_id = ?", (session_id,))
         cur.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
+        self._delete_rows_by_document_ids(cur, "chat_history", deleted_document_ids)
+        self._delete_rows_by_document_ids(cur, "chunks", deleted_document_ids)
+        if deleted_document_ids:
+            placeholders = ",".join(["?"] * len(deleted_document_ids))
+            cur.execute(
+                f"DELETE FROM documents WHERE id IN ({placeholders})",
+                tuple(deleted_document_ids),
+            )
         conn.commit()
         conn.close()
-        LOG.info("Deleted chat session %s", session_id)
+        LOG.info(
+            "Deleted chat session %s with %d document(s); retained %d shared document(s)",
+            session_id,
+            len(deleted_documents),
+            len(retained_documents),
+        )
+        return {
+            "session_id": session_id,
+            "deleted": True,
+            "deleted_documents": deleted_documents,
+            "retained_documents": retained_documents,
+        }
 
     def attach_document_to_session(self, session_id: int, document_id: int, title: str | None = None):
         conn = get_conn()
@@ -358,8 +505,8 @@ class DatabaseService:
         cur.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
         cur.executemany(
             """
-            INSERT INTO chunks (document_id, chunk_index, page, text_excerpt, vector_id)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO chunks (document_id, chunk_index, page, text_excerpt, vector_id, has_ocr, image_paths)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -368,6 +515,8 @@ class DatabaseService:
                     chunk.get("page"),
                     chunk.get("text_excerpt"),
                     chunk.get("vector_id"),
+                    chunk.get("has_ocr", False),
+                    json.dumps(chunk.get("image_paths", [])) if chunk.get("image_paths") else None,
                 )
                 for chunk in chunks
             ],
@@ -375,6 +524,35 @@ class DatabaseService:
         conn.commit()
         conn.close()
         LOG.info("Stored %d chunk rows for document %s", len(chunks), document_id)
+
+    def sync_chunk_vector_ids(self, metas: List[Dict[str, Any]]):
+        rows = []
+        for vector_id, meta in enumerate(metas):
+            document_id = meta.get("document_id")
+            chunk_index = meta.get("chunk")
+            if document_id is None or chunk_index is None:
+                continue
+            try:
+                rows.append((vector_id, int(document_id), int(chunk_index)))
+            except (TypeError, ValueError):
+                continue
+
+        if not rows:
+            return
+
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.executemany(
+            """
+            UPDATE chunks
+            SET vector_id = ?
+            WHERE document_id = ? AND chunk_index = ?
+            """,
+            rows,
+        )
+        conn.commit()
+        conn.close()
+        LOG.info("Synced %d chunk vector id(s)", len(rows))
 
     def get_document_by_filepath(self, filepath: str) -> Dict[str, Any] | None:
         conn = get_conn()

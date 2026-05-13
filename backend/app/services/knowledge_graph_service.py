@@ -12,7 +12,7 @@ from app.services.embedding_service import EmbeddingService
 class KnowledgeGraphService:
     """Service quan ly Knowledge Graph tren Neo4j, gom ca vector indexes."""
 
-    def __init__(self, embedding_service=None):
+    def __init__(self, embedding_service=None, setup_indexes: bool = True):
         url = settings.NEO4J_URI
         user = settings.NEO4J_USERNAME
         password = settings.NEO4J_PASSWORD
@@ -27,9 +27,10 @@ class KnowledgeGraphService:
         self.dim = self.embedding_service.get_dimension()
         self.is_online = True
 
-        import threading
+        if setup_indexes:
+            import threading
 
-        threading.Thread(target=self._setup_vector_index, daemon=True).start()
+            threading.Thread(target=self._setup_vector_index, daemon=True).start()
 
     def close(self):
         self.driver.close()
@@ -161,6 +162,93 @@ class KnowledgeGraphService:
         except Exception as exc:
             LOG.error("[KnowledgeGraphService] Failed to check document_id in graph: %s", exc)
             return False
+
+    def delete_documents(self, document_ids: List[int | str]) -> Dict[str, int]:
+        doc_ids = sorted({str(document_id) for document_id in document_ids if document_id is not None})
+        if not doc_ids or not self.is_online:
+            return {"nodes_deleted": 0, "relationships_deleted": 0}
+
+        def _doc_ids_expression(alias: str) -> str:
+            return (
+                f"coalesce({alias}.document_ids, "
+                f"CASE WHEN {alias}.document_id IS NULL THEN [] ELSE [toString({alias}.document_id)] END)"
+            )
+
+        try:
+            with self.driver.session() as session:
+                community_result = session.run(
+                    f"""
+                    MATCH (c:Community)
+                    WITH c, {_doc_ids_expression("c")} AS current_doc_ids
+                    WHERE any(doc_id IN current_doc_ids WHERE doc_id IN $doc_ids)
+                    WITH c, [doc_id IN current_doc_ids WHERE NOT doc_id IN $doc_ids] AS remaining_doc_ids
+                    SET c.document_ids = remaining_doc_ids,
+                        c.document_id = CASE
+                            WHEN size(remaining_doc_ids) = 0 THEN null
+                            ELSE remaining_doc_ids[0]
+                        END
+                    WITH c, remaining_doc_ids
+                    WHERE size(remaining_doc_ids) = 0
+                    DETACH DELETE c
+                    """,
+                    doc_ids=doc_ids,
+                )
+                community_summary = community_result.consume().counters
+
+                relationship_result = session.run(
+                    f"""
+                    MATCH ()-[r:RELATED]-()
+                    WITH r, {_doc_ids_expression("r")} AS current_doc_ids
+                    WHERE any(doc_id IN current_doc_ids WHERE doc_id IN $doc_ids)
+                    WITH r, [doc_id IN current_doc_ids WHERE NOT doc_id IN $doc_ids] AS remaining_doc_ids
+                    SET r.document_ids = remaining_doc_ids,
+                        r.document_id = CASE
+                            WHEN size(remaining_doc_ids) = 0 THEN null
+                            ELSE remaining_doc_ids[0]
+                        END
+                    WITH r, remaining_doc_ids
+                    WHERE size(remaining_doc_ids) = 0
+                    DELETE r
+                    """,
+                    doc_ids=doc_ids,
+                )
+                relationship_summary = relationship_result.consume().counters
+
+                entity_result = session.run(
+                    f"""
+                    MATCH (e:Entity)
+                    WITH e, {_doc_ids_expression("e")} AS current_doc_ids
+                    WHERE any(doc_id IN current_doc_ids WHERE doc_id IN $doc_ids)
+                    WITH e, [doc_id IN current_doc_ids WHERE NOT doc_id IN $doc_ids] AS remaining_doc_ids
+                    SET e.document_ids = remaining_doc_ids,
+                        e.document_id = CASE
+                            WHEN size(remaining_doc_ids) = 0 THEN null
+                            ELSE remaining_doc_ids[0]
+                        END
+                    WITH e, remaining_doc_ids
+                    WHERE size(remaining_doc_ids) = 0
+                    DETACH DELETE e
+                    """,
+                    doc_ids=doc_ids,
+                )
+                entity_summary = entity_result.consume().counters
+
+            nodes_deleted = int(community_summary.nodes_deleted) + int(entity_summary.nodes_deleted)
+            relationships_deleted = (
+                int(community_summary.relationships_deleted)
+                + int(relationship_summary.relationships_deleted)
+                + int(entity_summary.relationships_deleted)
+            )
+            LOG.info(
+                "[KnowledgeGraphService] Deleted graph data for document_ids=%s: nodes=%d relationships=%d",
+                doc_ids,
+                nodes_deleted,
+                relationships_deleted,
+            )
+            return {"nodes_deleted": nodes_deleted, "relationships_deleted": relationships_deleted}
+        except Exception as exc:
+            LOG.error("[KnowledgeGraphService] Failed to delete documents from graph: %s", exc)
+            return {"nodes_deleted": 0, "relationships_deleted": 0}
 
     def upsert_graph(self, document_id: str, graph_data: Dict[str, Any]):
         """Upsert entities and relationships with batch + UNWIND."""

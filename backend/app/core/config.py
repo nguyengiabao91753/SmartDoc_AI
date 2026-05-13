@@ -5,6 +5,10 @@ import os
 
 ROOT = Path(__file__).resolve().parents[3]  # smartdoc-ai/backend/app/..
 class Settings(BaseSettings):
+
+    #OCR
+    TESSERACT_CMD: str = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
     # Ollama / LLM
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen2.5:1.5b")

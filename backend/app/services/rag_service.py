@@ -161,6 +161,8 @@ class RAGService:
                     "relationship": metadata.get("relationship"),
                     "graph_source": metadata.get("source"),
                     "graph_target": metadata.get("target"),
+                    "has_ocr": metadata.get("has_ocr", False),
+                    "image_paths": metadata.get("image_paths", []),
                 }
             )
         return formatted_sources
@@ -175,6 +177,7 @@ class RAGService:
             LOG.info("Dang xu ly tai lieu: %s", file_path)
             documents = self.doc_service.load_document(
                 file_path,
+                document_id=document_id,
                 extra_metadata={"document_id": document_id} if document_id is not None else None,
             )
             if not documents:
@@ -192,6 +195,8 @@ class RAGService:
                         "page_end": document.metadata.get("page_end"),
                         "document_id": document.metadata.get("document_id"),
                         "session_id": session_id,
+                        "has_ocr": document.metadata.get("has_ocr", False),
+                        "image_paths": document.metadata.get("image_paths", []),
                     }
                 )
 
@@ -206,6 +211,8 @@ class RAGService:
                         "page": meta.get("page_start"),
                         "text_excerpt": meta.get("text", "")[:240],
                         "vector_id": vector_id,
+                        "has_ocr": meta.get("has_ocr", False),
+                        "image_paths": meta.get("image_paths", []),
                     }
                 )
 
@@ -314,6 +321,53 @@ class RAGService:
         except Exception as exc:
             LOG.error("Loi xoa vectorstore: %s", exc)
             return {"status": "error", "message": str(exc)}
+
+    def delete_documents(
+        self,
+        document_ids: List[int],
+        session_id: int | None = None,
+    ) -> Dict[str, Any]:
+        try:
+            normalized_doc_ids = {int(doc_id) for doc_id in document_ids if doc_id is not None}
+
+            def should_remove(meta: Dict[str, Any]) -> bool:
+                meta_doc_id = meta.get("document_id")
+                try:
+                    if meta_doc_id is not None and int(meta_doc_id) in normalized_doc_ids:
+                        return True
+                except (TypeError, ValueError):
+                    pass
+
+                if session_id is not None and meta_doc_id is None:
+                    try:
+                        return int(meta.get("session_id")) == int(session_id)
+                    except (TypeError, ValueError):
+                        return False
+
+                return False
+
+            removed_count = self.vectorstore.remove_by_predicate(should_remove)
+            if removed_count:
+                self.vectorstore.save()
+                self._rebuild_engines()
+                from app.services.database_service import db_service
+
+                db_service.sync_chunk_vector_ids(self.vectorstore.meta)
+
+            LOG.info(
+                "Deleted %d vector(s) for session=%s document_ids=%s",
+                removed_count,
+                session_id,
+                sorted(normalized_doc_ids),
+            )
+            return {
+                "status": "success",
+                "vectors_deleted": removed_count,
+                "document_ids": sorted(normalized_doc_ids),
+            }
+        except Exception as exc:
+            LOG.error("Loi xoa vectors: %s", exc)
+            return {"status": "error", "message": str(exc), "vectors_deleted": 0}
 
     def get_status(self) -> Dict[str, Any]:
         return {

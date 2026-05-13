@@ -168,6 +168,8 @@ def init_db():
     _ensure_column(cur, "chat_history", "session_id", "session_id INTEGER")
     _ensure_column(cur, "chat_history", "search_type", "search_type TEXT DEFAULT 'vector'")
     _ensure_column(cur, "chat_history", "rag_mode", "rag_mode TEXT DEFAULT 'rag'")
+    _ensure_column(cur, "chunks", "has_ocr", "has_ocr BOOLEAN DEFAULT 0")
+    _ensure_column(cur, "chunks", "image_paths", "image_paths TEXT")  # JSON list
 
     cur.execute(
         """

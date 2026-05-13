@@ -3,7 +3,7 @@ import pickle
 import re
 import unicodedata
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 import faiss
 import numpy as np
@@ -144,6 +144,67 @@ class FaissStore:
             self.bm25_retriever.fit(texts)
         else:
             self.bm25_retriever = BM25Retriever()
+
+    def _reconstruct_vectors(self) -> List[np.ndarray]:
+        vectors: List[np.ndarray] = []
+        total = min(int(self.index.ntotal), len(self.meta))
+        for idx in range(total):
+            vector = np.zeros((self.dim,), dtype="float32")
+            self.index.reconstruct(idx, vector)
+            vectors.append(vector)
+        return vectors
+
+    def _replace_contents(self, vectors: List[np.ndarray], metas: List[Dict[str, Any]]):
+        self.index = self._create_index(self.dim, self.index_type)
+        self.meta = list(metas)
+
+        if vectors:
+            matrix = np.asarray(vectors, dtype="float32")
+            if self.index_type == "ivf" and not self.index.is_trained:
+                self.index.train(matrix)
+            self.index.add(matrix)
+
+        self._refresh_bm25()
+
+    @staticmethod
+    def _normalize_int(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def remove_by_predicate(self, predicate: Callable[[Dict[str, Any]], bool]) -> int:
+        """Remove vectors whose metadata matches predicate by rebuilding the FAISS index."""
+        if self.index.ntotal == 0 or not self.meta:
+            return 0
+
+        vectors = self._reconstruct_vectors()
+        kept_vectors: List[np.ndarray] = []
+        kept_metas: List[Dict[str, Any]] = []
+        removed_count = 0
+
+        for vector, meta in zip(vectors, self.meta):
+            if predicate(meta):
+                removed_count += 1
+                continue
+            kept_vectors.append(vector)
+            kept_metas.append(meta)
+
+        if removed_count == 0:
+            return 0
+
+        self._replace_contents(kept_vectors, kept_metas)
+        LOG.info("Removed %d vectors; total vectors: %d", removed_count, self.index.ntotal)
+        return removed_count
+
+    def remove_by_document_ids(self, document_ids: List[int]) -> int:
+        normalized_ids = {int(doc_id) for doc_id in document_ids if doc_id is not None}
+        if not normalized_ids:
+            return 0
+
+        return self.remove_by_predicate(
+            lambda meta: self._normalize_int(meta.get("document_id")) in normalized_ids
+        )
 
     def add(self, vectors: np.ndarray, metas: List[Dict[str, Any]]) -> List[int]:
         if vectors.size == 0:
