@@ -18,10 +18,12 @@ class VanillaRAGEngine(BaseRAGModeEngine):
 
     def query(self, request: RAGQueryRequest) -> RAGEngineResult:
         plan = self.planner.plan(request)
+        print("RAG Plan history:", plan.conversation_history)
         source_documents = self.retriever.retrieve(plan)
         answer = self.responder.answer(
             question=plan.question,
             source_documents=source_documents,
             llm_model=plan.llm_model,
+            conversation_history=plan.conversation_history,
         )
         return RAGEngineResult(answer=answer, source_documents=source_documents)

@@ -5,6 +5,7 @@ import sys
 from datetime import datetime
 from html import escape
 from pathlib import Path
+from typing import List
 from uuid import uuid4
 
 import streamlit as st
@@ -104,6 +105,12 @@ def init_state():
         "_do_graph_load": False, 
         "_graph_just_initialized": False,
         "_graph_init_failed": False,
+        "show_clear_history_confirm": False,
+        "show_clear_vectorstore_confirm": False,
+        "show_clear_vectorstore_dialog": False,
+        "clear_vectorstore_session_id": None,
+        "clear_vectorstore_documents": None,
+        "clear_vectorstore_selected": {},
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -325,6 +332,306 @@ def remove_session(session_id: int, rag: RAGService | None = None):
         st.session_state.flash_message = {"type": "success", "text": "Đã xóa đoạn chat và toàn bộ dữ liệu liên quan!"}
     else:
         st.session_state.flash_message = {"type": "warning", "text": "Đoạn chat này không còn tồn tại."}
+
+
+def show_clear_history_confirmation():
+    """Show confirmation dialog for clearing all chat history"""
+    if st.session_state.get("show_clear_history_confirm"):
+        with st.sidebar.container():
+            st.warning("⚠️ Bạn có chắc chắn muốn xóa toàn bộ lịch sử chat? Hành động này không thể hoàn tác!")
+            confirm_cols = st.columns(2)
+            with confirm_cols[0]:
+                if st.button("✓ Xác nhận xóa", use_container_width=True, key="confirm_clear_history"):
+                    clear_all_chat_history()
+                    st.session_state.show_clear_history_confirm = False
+                    st.rerun()
+            with confirm_cols[1]:
+                if st.button("✗ Hủy", use_container_width=True, key="cancel_clear_history"):
+                    st.session_state.show_clear_history_confirm = False
+                    st.rerun()
+
+
+def clear_all_chat_history():
+    """Clear all chat sessions and their associated data"""
+    if is_busy():
+        return
+    
+    rag = ensure_rag_service()
+    
+    try:
+        sessions = db_service.get_chat_sessions()
+        cleanup_errors: list[str] = []
+        
+        for session in sessions:
+            session_id = session["id"]
+            delete_result = db_service.delete_chat_session(session_id)
+            deleted_documents = delete_result.get("deleted_documents", [])
+            deleted_document_ids = [int(document["id"]) for document in deleted_documents if document.get("id") is not None]
+            
+            if rag is not None and deleted_document_ids:
+                vector_result = rag.delete_documents(deleted_document_ids, session_id=session_id)
+                if vector_result.get("status") != "success":
+                    cleanup_errors.append("vectorstore")
+            
+            try:
+                if not cleanup_deleted_graph_documents(deleted_document_ids, session_id, rag):
+                    cleanup_errors.append("graph")
+            except Exception as exc:
+                LOG.warning("Graph cleanup failed: %s", exc)
+                cleanup_errors.append("graph")
+            
+            try:
+                cleanup_deleted_document_files(deleted_documents)
+            except Exception as exc:
+                LOG.warning("File cleanup failed: %s", exc)
+                cleanup_errors.append("file")
+            
+            st.session_state.latest_sources_by_session.pop(session_id, None)
+            st.session_state.corag_metadata_by_session.pop(session_id, None)
+            st.session_state.selfrag_metadata_by_session.pop(session_id, None)
+        
+        # Reset UI state
+        st.session_state.active_session_id = None
+        st.session_state.draft_session = True
+        st.session_state.last_upload_success = None
+        st.session_state.last_graph_success = None
+        st.session_state.composer_prompt = ""
+        st.session_state.editing_session_id = None
+        st.session_state.open_session_menu_id = None
+        
+        if cleanup_errors:
+            st.session_state.flash_message = {
+                "type": "warning",
+                "text": "Đã xóa toàn bộ lịch sử chat, nhưng một phần dữ liệu phụ chưa dọn xong. Xem log để kiểm tra.",
+            }
+        else:
+            st.session_state.flash_message = {
+                "type": "success",
+                "text": "Đã xóa toàn bộ lịch sử chat và dữ liệu liên quan!",
+            }
+    except Exception as exc:
+        LOG.error("Error clearing all chat history: %s", exc)
+        st.session_state.flash_message = {
+            "type": "error",
+            "text": f"Lỗi khi xóa lịch sử chat: {exc}",
+        }
+
+
+def show_clear_vectorstore_confirmation():
+    """Show confirmation dialog for clearing vector store"""
+    if st.session_state.get("show_clear_vectorstore_confirm"):
+        with st.sidebar.container():
+            st.warning("⚠️ Bạn có chắc chắn muốn xóa tất cả tài liệu đã upload? Hành động này không thể hoàn tác!")
+            confirm_cols = st.columns(2)
+            with confirm_cols[0]:
+                if st.button("✓ Xác nhận xóa", use_container_width=True, key="confirm_clear_vectorstore"):
+                    clear_all_vector_store()
+                    st.session_state.show_clear_vectorstore_confirm = False
+                    st.rerun()
+            with confirm_cols[1]:
+                if st.button("✗ Hủy", use_container_width=True, key="cancel_clear_vectorstore"):
+                    st.session_state.show_clear_vectorstore_confirm = False
+                    st.rerun()
+
+
+def clear_all_vector_store():
+    """Clear all vector store data and reset database"""
+    if is_busy():
+        return
+    
+    rag = ensure_rag_service()
+    
+    try:
+        # First clear all chat sessions
+        sessions = db_service.get_chat_sessions()
+        cleanup_errors: list[str] = []
+        
+        for session in sessions:
+            session_id = session["id"]
+            delete_result = db_service.delete_chat_session(session_id)
+            deleted_documents = delete_result.get("deleted_documents", [])
+            deleted_document_ids = [int(document["id"]) for document in deleted_documents if document.get("id") is not None]
+            
+            try:
+                cleanup_deleted_document_files(deleted_documents)
+            except Exception as exc:
+                LOG.warning("File cleanup failed: %s", exc)
+                cleanup_errors.append("file")
+            
+            st.session_state.latest_sources_by_session.pop(session_id, None)
+            st.session_state.corag_metadata_by_session.pop(session_id, None)
+            st.session_state.selfrag_metadata_by_session.pop(session_id, None)
+        
+        # Clear the vector store
+        if rag is not None:
+            vectorstore_result = rag.clear_vectorstore()
+            if vectorstore_result.get("status") != "success":
+                cleanup_errors.append("vectorstore")
+        
+        # Reset UI state
+        st.session_state.active_session_id = None
+        st.session_state.draft_session = True
+        st.session_state.last_upload_success = None
+        st.session_state.last_graph_success = None
+        st.session_state.composer_prompt = ""
+        st.session_state.editing_session_id = None
+        st.session_state.open_session_menu_id = None
+        
+        if cleanup_errors:
+            st.session_state.flash_message = {
+                "type": "warning",
+                "text": "Đã xóa toàn bộ vector store, nhưng một phần dữ liệu chưa dọn xong. Xem log để kiểm tra.",
+            }
+        else:
+            st.session_state.flash_message = {
+                "type": "success",
+                "text": "Đã xóa toàn bộ tài liệu và vector store!",
+            }
+    except Exception as exc:
+        LOG.error("Error clearing vector store: %s", exc)
+        st.session_state.flash_message = {
+            "type": "error",
+            "text": f"Lỗi khi xóa vector store: {exc}",
+        }
+
+
+def clear_session_chat_history(session_id: int):
+    """Clear chat history messages for a specific session"""
+    if is_busy():
+        return
+    
+    try:
+        result = db_service.clear_chat_history_for_session(session_id)
+        if result.get("status") == "success":
+            deleted_count = result.get("deleted_count", 0)
+            st.session_state.flash_message = {
+                "type": "success",
+                "text": f"Đã xóa {deleted_count} tin nhắn khỏi đoạn chat",
+            }
+        else:
+            st.session_state.flash_message = {
+                "type": "error",
+                "text": "Không thể xóa lịch sử chat",
+            }
+    except Exception as exc:
+        LOG.error("Error clearing session chat history: %s", exc)
+        st.session_state.flash_message = {
+            "type": "error",
+            "text": f"Lỗi khi xóa lịch sử: {exc}",
+        }
+
+
+def show_clear_vectorstore_for_session_dialog(session_id: int):
+    """Show dialog to select documents for deletion"""
+    documents = db_service.get_session_documents(session_id)
+    
+    if not documents:
+        st.session_state.flash_message = {
+            "type": "warning",
+            "text": "Đoạn chat này không có tài liệu",
+        }
+        return
+    
+    if len(documents) < 2:
+        # If only 1 document, delete it directly
+        document_id = int(documents[0]["id"])
+        clear_session_documents(session_id, [document_id])
+        return
+    
+    # Multiple documents - show selection dialog
+    st.session_state.show_clear_vectorstore_dialog = True
+    st.session_state.clear_vectorstore_session_id = session_id
+    st.session_state.clear_vectorstore_documents = documents
+    st.rerun()
+
+
+def clear_session_documents(session_id: int, document_ids: List[int]):
+    """Clear specific documents from a session"""
+    if is_busy():
+        return
+    
+    rag = ensure_rag_service()
+    
+    try:
+        # Delete from vector store
+        if rag is not None:
+            vector_result = rag.delete_documents(document_ids, session_id=session_id)
+            if vector_result.get("status") != "success":
+                LOG.warning("Vector store deletion failed: %s", vector_result.get("message"))
+        
+        # Delete documents from database
+        for document_id in document_ids:
+            db_service.delete_document(document_id)
+        
+        st.session_state.flash_message = {
+            "type": "success",
+            "text": f"Đã xóa {len(document_ids)} tài liệu khỏi vector store",
+        }
+        
+        # Reset UI state
+        st.session_state.show_clear_vectorstore_dialog = False
+        st.session_state.clear_vectorstore_session_id = None
+        st.session_state.clear_vectorstore_documents = None
+        st.session_state.clear_vectorstore_selected = {}
+        
+    except Exception as exc:
+        LOG.error("Error clearing session documents: %s", exc)
+        st.session_state.flash_message = {
+            "type": "error",
+            "text": f"Lỗi khi xóa tài liệu: {exc}",
+        }
+
+
+def render_clear_vectorstore_dialog():
+    """Render dialog to select documents for deletion"""
+    if not st.session_state.get("show_clear_vectorstore_dialog"):
+        return
+    
+    session_id = st.session_state.get("clear_vectorstore_session_id")
+    documents = st.session_state.get("clear_vectorstore_documents", [])
+    
+    if not documents or not session_id:
+        return
+    
+    st.divider()
+    st.warning("Chọn tài liệu bạn muốn xóa từ vector store:")
+    
+    # Initialize selected state
+    if "clear_vectorstore_selected" not in st.session_state:
+        st.session_state.clear_vectorstore_selected = {}
+    
+    # Render checkboxes for each document
+    for doc in documents:
+        doc_id = int(doc["id"])
+        doc_filename = doc.get("filename", f"Tài liệu {doc_id}")
+        
+        is_selected = st.session_state.clear_vectorstore_selected.get(doc_id, False)
+        is_selected = st.checkbox(
+            doc_filename,
+            value=is_selected,
+            key=f"clear_doc_{doc_id}"
+        )
+        st.session_state.clear_vectorstore_selected[doc_id] = is_selected
+    
+    # Action buttons
+    cols = st.columns([1, 1, 2])
+    with cols[0]:
+        selected_ids = [doc_id for doc_id, selected in st.session_state.clear_vectorstore_selected.items() if selected]
+        if selected_ids:
+            if st.button("✓ Xóa", use_container_width=True):
+                clear_session_documents(session_id, selected_ids)
+                st.rerun()
+        else:
+            st.button("✓ Xóa", use_container_width=True, disabled=True)
+    
+    with cols[1]:
+        if st.button("✗ Hủy", use_container_width=True):
+            st.session_state.show_clear_vectorstore_dialog = False
+            st.session_state.clear_vectorstore_session_id = None
+            st.session_state.clear_vectorstore_documents = None
+            st.session_state.clear_vectorstore_selected = {}
+            st.rerun()
+
 
 def sanitize_filename(filename: str) -> str:
     stem = Path(filename).stem
@@ -944,12 +1251,64 @@ def render_sidebar(sessions, rag: RAGService | None = None):
                     )
                 with menu_cols[1]:
                     st.button(
-                        "Xóa",
+                        "Xóa chat",
                         key=f"menu_delete_{session_id}",
                         use_container_width=True,
                         on_click=remove_session,
                         args=(session_id, rag)
                     )
+                
+                # Clear History button
+                st.button(
+                    "🗑️ Xóa tin nhắn",
+                    key=f"menu_clear_history_{session_id}",
+                    use_container_width=True,
+                    on_click=clear_session_chat_history,
+                    args=(session_id,),
+                )
+                
+                # Clear Vector Store button
+                st.button(
+                    "🗑️ Xóa tài liệu",
+                    key=f"menu_clear_vectorstore_{session_id}",
+                    use_container_width=True,
+                    on_click=show_clear_vectorstore_for_session_dialog,
+                    args=(session_id,),
+                )
+        
+        # Separator
+        st.divider()
+        
+        # Clear all buttons section
+        st.markdown('<div class="sidebar-title">Quản lý dữ liệu</div>', unsafe_allow_html=True)
+        
+        clear_cols = st.columns(1)
+        with clear_cols[0]:
+            if st.button(
+                "🗑️ Xóa toàn bộ lịch sử",
+                use_container_width=True,
+                disabled=is_busy(),
+                key="clear_history_btn",
+                help="Xóa tất cả các đoạn chat và lịch sử"
+            ):
+                st.session_state.show_clear_history_confirm = True
+                st.rerun()
+        
+        clear_cols = st.columns(1)
+        with clear_cols[0]:
+            if st.button(
+                "🗑️ Xóa Vector Store",
+                use_container_width=True,
+                disabled=is_busy(),
+                key="clear_vectorstore_btn",
+                help="Xóa tất cả tài liệu đã upload"
+            ):
+                st.session_state.show_clear_vectorstore_confirm = True
+                st.rerun()
+        
+        # Show confirmation dialogs if needed
+        show_clear_history_confirmation()
+        show_clear_vectorstore_confirmation()
 
 def render_processing_card(file_name: str):
     st.markdown(
@@ -2014,6 +2373,9 @@ def main():
         show_flash_message()
 
     render_sidebar(sessions, rag)
+    
+    # Render clear vectorstore dialog if needed
+    render_clear_vectorstore_dialog()
     
     graph_action_ph = render_main_area(rag, active_session)  
     apply_scheduled_bottom_scroll()

@@ -499,6 +499,39 @@ class DatabaseService:
             rag_mode,
         )
 
+    def clear_chat_history_for_session(self, session_id: int) -> Dict[str, Any]:
+        """Clear all chat history messages for a specific session"""
+        conn = get_conn()
+        cur = conn.cursor()
+        
+        # Get count before deletion
+        cur.execute("SELECT COUNT(*) as count FROM chat_history WHERE session_id = ?", (session_id,))
+        count_row = cur.fetchone()
+        deleted_count = int(count_row["count"]) if count_row else 0
+        
+        # Delete chat history
+        cur.execute("DELETE FROM chat_history WHERE session_id = ?", (session_id,))
+        
+        # Update session updated_at
+        cur.execute(
+            """
+            UPDATE chat_sessions
+            SET updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (session_id,),
+        )
+        
+        conn.commit()
+        conn.close()
+        LOG.info("Cleared %d chat history entries for session %s", deleted_count, session_id)
+        
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "deleted_count": deleted_count,
+        }
+
     def replace_document_chunks(self, document_id: int, chunks: List[Dict[str, Any]]):
         conn = get_conn()
         cur = conn.cursor()

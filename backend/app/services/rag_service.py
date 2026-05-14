@@ -289,6 +289,8 @@ class RAGService:
                 max_messages=6,
             )
 
+            print("Conversation history for session_id", session_id, ":", conversation_history)
+
         try:
             return self._execute_query(
                 question=question,
